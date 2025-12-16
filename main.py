@@ -1,4 +1,5 @@
 import sys
+import os
 import xml.etree.ElementTree as ET
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QLineEdit, 
@@ -256,11 +257,20 @@ class App(QWidget):
         if self.config is not None:
             workspaces_node = self.config.find('workspaces')
             if workspaces_node is not None:
-                for ws in workspaces_node.findall('workspace'):
+                removed_workspaces = []
+                for ws in list(workspaces_node.findall('workspace')): # Create a copy for safe removal
                     name = ws.get('name')
                     path = ws.get('path')
-                    if name and path:
+                    if name and path and os.path.isdir(path):
                         self.add_workspace_tab(name, path)
+                    else:
+                        removed_workspaces.append(name or path or 'Unnamed Workspace')
+                        workspaces_node.remove(ws)
+                
+                if removed_workspaces:
+                    self.save_config() # Persist the removal
+                    QMessageBox.warning(self, 'Invalid Workspaces Removed',
+                                        'The following workspaces had invalid paths and were automatically removed:\n\n' + '\n'.join(removed_workspaces))
 
     def add_workspace(self):
         path = QFileDialog.getExistingDirectory(self, "Select Workspace Directory")
