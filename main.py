@@ -77,7 +77,7 @@ class WorkspaceTab(QWidget):
         branch_buttons_layout.addWidget(self.refresh_remote_branches_button)
         branch_buttons_layout.addStretch()
 
-        layout.addRow('可选分支', branch_buttons_layout)
+        layout.addRow('可选远程分支', branch_buttons_layout)
         layout.addRow(shuttle_layout)
 
         self.create_branch_button = QPushButton('创建分支')
