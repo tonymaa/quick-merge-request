@@ -308,9 +308,9 @@ class WorkspaceTab(QWidget):
             self.assignee_input.text(),
             self.reviewer_input.text(),
             self.source_branch_combo.currentText(),
+            self.mr_target_branch_combo.currentText(),
             self.mr_title_input.text(),
             self.mr_description_input.toPlainText(),
-            target_branch=self.mr_target_branch_combo.currentText()
         )
         self.mr_output.setText(output)
 

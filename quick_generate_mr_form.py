@@ -38,7 +38,7 @@ def parse_target_branch_from_source(source_branch):
     except Exception:
         return None
 
-def generate_mr(directory, gitlab_url, token, assignee_user, reviewer_user, source_branch, title, description):
+def generate_mr(directory, gitlab_url, token, assignee_user, reviewer_user, source_branch, target_branch, title, description):
     try:
         gl = gitlab.Gitlab(url=gitlab_url, private_token=token)
         gl.auth()
@@ -47,8 +47,8 @@ def generate_mr(directory, gitlab_url, token, assignee_user, reviewer_user, sour
 
     if not source_branch:
         return 'Please select a source branch.'
-
-    target_branch = source_branch.split('__from__')[1].replace('@', '/')
+    if not target_branch:
+        return 'Please select a target branch.'
     
     # Get project
     stdout, stderr = run_command(['git', 'remote', '-v'], directory)
@@ -65,6 +65,7 @@ def generate_mr(directory, gitlab_url, token, assignee_user, reviewer_user, sour
     except IndexError:
         return "Assignee or Reviewer not found."
 
+    print(assignee.id + ', ' + reviewer.id)
     mr_data = {
         'source_branch': source_branch,
         'target_branch': target_branch,
