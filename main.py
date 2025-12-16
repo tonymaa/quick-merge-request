@@ -1,9 +1,10 @@
 import sys
+import xml.etree.ElementTree as ET
 from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QLineEdit, QPushButton, QFileDialog, QLabel, QTextEdit, QComboBox, QFormLayout
 
 # Import refactored functions
 from quick_create_branch import create_branch as create_branch_func, get_remote_branches
-from quick_generate_mr_form import get_local_branches, generate_mr
+from quick_generate_mr_form import get_local_branches, generate_mr, get_mr_defaults
 
 class App(QWidget):
     def __init__(self):
@@ -13,7 +14,16 @@ class App(QWidget):
         self.top = 100
         self.width = 800
         self.height = 700
+        self.config = self.load_config()
         self.initUI()
+
+    def load_config(self):
+        try:
+            tree = ET.parse('config.xml')
+            root = tree.getroot()
+            return root
+        except (FileNotFoundError, ET.ParseError):
+            return None
 
     def initUI(self):
         self.setWindowTitle(self.title)
@@ -75,12 +85,23 @@ class App(QWidget):
     def init_create_mr_tab(self):
         layout = QFormLayout()
 
-        self.gitlab_url_input = QLineEdit('http://pd-gitlab.toppanecquaria.com:10080')
-        self.token_input = QLineEdit('glpat-1JeC8uvfQ9MoWsdzxyDy')
-        self.assignee_input = QLineEdit('zhangrongrong')
-        self.reviewer_input = QLineEdit('mengying')
+        gitlab_config = self.config.find('gitlab') if self.config is not None else None
+        def get_config_value(element, tag, default=''):
+            if element is not None:
+                found = element.find(tag)
+                if found is not None and found.text:
+                    return found.text.strip()
+            return default
+
+        self.gitlab_url_input = QLineEdit(get_config_value(gitlab_config, 'gitlab_url'))
+        self.token_input = QLineEdit(get_config_value(gitlab_config, 'private_token'))
+        self.assignee_input = QLineEdit(get_config_value(gitlab_config, 'assignee'))
+        self.reviewer_input = QLineEdit(get_config_value(gitlab_config, 'reviewer'))
+
         self.source_branch_combo = QComboBox()
         self.refresh_branches_button = QPushButton('Refresh Branches')
+        self.mr_title_input = QLineEdit()
+        self.mr_description_input = QTextEdit()
         self.create_mr_button = QPushButton('Create MR')
         self.mr_output = QTextEdit()
         self.mr_output.setReadOnly(True)
@@ -89,12 +110,20 @@ class App(QWidget):
         layout.addRow('Private Token:', self.token_input)
         layout.addRow('Assignee:', self.assignee_input)
         layout.addRow('Reviewer:', self.reviewer_input)
-        layout.addRow('Source Branch:', self.source_branch_combo)
-        layout.addRow(self.refresh_branches_button)
+
+        source_branch_layout = QHBoxLayout()
+        source_branch_layout.addWidget(self.source_branch_combo)
+        source_branch_layout.addWidget(self.refresh_branches_button)
+        layout.addRow('Source Branch:', source_branch_layout)
+
+        layout.addRow('Title:', self.mr_title_input)
+        layout.addRow('Description:', self.mr_description_input)
+
         layout.addRow(self.create_mr_button)
         layout.addRow(self.mr_output)
 
         self.refresh_branches_button.clicked.connect(self.run_refresh_branches)
+        self.source_branch_combo.currentIndexChanged.connect(self.update_mr_defaults)
         self.create_mr_button.clicked.connect(self.run_create_mr)
 
         self.tab2.setLayout(layout)
@@ -148,6 +177,32 @@ class App(QWidget):
         valid_branches, message = get_local_branches(directory)
         self.source_branch_combo.addItems(valid_branches)
         self.mr_output.setText(message)
+        if valid_branches:
+            self.update_mr_defaults()
+
+    def update_mr_defaults(self):
+        directory = self.dir_input.text()
+        source_branch = self.source_branch_combo.currentText()
+        if not directory or not source_branch:
+            return
+
+        gitlab_config = self.config.find('gitlab') if self.config is not None else None
+        def get_config_value(element, tag, default=''):
+            if element is not None:
+                found = element.find(tag)
+                if found is not None and found.text:
+                    return found.text.strip()
+            return default
+
+        title_template = get_config_value(gitlab_config, 'title_template', 'Draft: {commit_message}')
+        description_template = get_config_value(gitlab_config, 'description_template', '{commit_message}')
+
+        defaults, error = get_mr_defaults(directory, source_branch, title_template, description_template)
+        if error:
+            self.mr_output.setText(error)
+        else:
+            self.mr_title_input.setText(defaults['title'])
+            self.mr_description_input.setPlainText(defaults['description'])
 
     def run_create_mr(self):
         directory = self.dir_input.text()
@@ -164,7 +219,9 @@ class App(QWidget):
             self.token_input.text(),
             self.assignee_input.text(),
             self.reviewer_input.text(),
-            self.source_branch_combo.currentText()
+            self.source_branch_combo.currentText(),
+            self.mr_title_input.text(),
+            self.mr_description_input.toPlainText()
         )
         self.mr_output.setText(output)
 

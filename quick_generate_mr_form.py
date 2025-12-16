@@ -19,7 +19,19 @@ def get_local_branches(directory):
     valid_branches = [b.strip().replace('* ', '') for b in branches if '__from__' in b]
     return valid_branches, "Branches loaded."
 
-def generate_mr(directory, gitlab_url, token, assignee_user, reviewer_user, source_branch):
+def get_mr_defaults(directory, source_branch, title_template, description_template):
+    # Get last commit message
+    stdout, stderr = run_command(['git', 'log', source_branch, '-1', '--pretty=%B'], directory)
+    if stderr:
+        return None, f'Could not get last commit message: {stderr}'
+    last_commit_message = stdout.strip()
+
+    title = title_template.format(commit_message=last_commit_message)
+    # The description from config parser might have \n as literal strings, so replace them.
+    description = description_template.replace('\n', '\n').format(commit_message=last_commit_message)
+    return {'title': title, 'description': description}, None
+
+def generate_mr(directory, gitlab_url, token, assignee_user, reviewer_user, source_branch, title, description):
     try:
         gl = gitlab.Gitlab(url=gitlab_url, private_token=token)
         gl.auth()
@@ -39,15 +51,6 @@ def generate_mr(directory, gitlab_url, token, assignee_user, reviewer_user, sour
     remote_url = re.search(r'https?://[^\s]+', stdout).group(0)
     project_path = urlparse(remote_url).path.strip('/').replace('.git', '')
     project = gl.projects.get(project_path)
-
-    # Get last commit message
-    stdout, stderr = run_command(['git', 'log', source_branch, '-1', '--pretty=%B'], directory)
-    if stderr:
-        return f'Could not get last commit message: {stderr}'
-    last_commit_message = stdout.strip()
-
-    title = f'Draft: {last_commit_message}'
-    description = f"""## Description of Changes\n\n{last_commit_message}\n\n## Type of Change..."""
 
     try:
         assignee = gl.users.list(username=assignee_user)[0]
