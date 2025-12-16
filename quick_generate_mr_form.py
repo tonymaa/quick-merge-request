@@ -19,9 +19,9 @@ def get_local_branches(directory):
     valid_branches = [b.strip().replace('* ', '') for b in branches if '__from__' in b]
     return valid_branches, "Branches loaded."
 
-def get_mr_defaults(directory, source_branch, title_template, description_template):
+def get_mr_defaults(project_path, source_branch, title_template, description_template):
     # Get last commit message
-    stdout, stderr = run_command(['git', 'log', source_branch, '-1', '--pretty=%B'], directory)
+    stdout, stderr = run_command(['git', 'log', source_branch, '-1', '--pretty=%B'], project_path)
     if stderr:
         return None, f'Could not get last commit message: {stderr}'
     last_commit_message = stdout.strip()
@@ -30,6 +30,13 @@ def get_mr_defaults(directory, source_branch, title_template, description_templa
     # The description from config parser might have \n as literal strings, so replace them.
     description = description_template.replace('\n', '\n').format(commit_message=last_commit_message)
     return {'title': title, 'description': description}, None
+
+def parse_target_branch_from_source(source_branch):
+    """Parses the target branch from the source branch name (e.g., 'target_feature' -> 'target')."""
+    try:
+        return source_branch.split('__from__')[1].replace('@', '/')
+    except Exception:
+        return None
 
 def generate_mr(directory, gitlab_url, token, assignee_user, reviewer_user, source_branch, title, description):
     try:

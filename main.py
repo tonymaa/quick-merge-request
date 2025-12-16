@@ -2,6 +2,7 @@ import sys
 import os
 import xml.etree.ElementTree as ET
 from PyQt5.QtWidgets import (
+    QCheckBox,
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QLineEdit, 
     QPushButton, QFileDialog, QLabel, QTextEdit, QComboBox, QFormLayout, QInputDialog,
     QMessageBox, QListWidget, QAbstractItemView
@@ -10,7 +11,7 @@ from PyQt5.QtCore import Qt
 
 # Import refactored functions
 from quick_create_branch import create_branch as create_branch_func, get_remote_branches
-from quick_generate_mr_form import get_local_branches, generate_mr, get_mr_defaults
+from quick_generate_mr_form import get_local_branches, generate_mr, get_mr_defaults, parse_target_branch_from_source
 
 class WorkspaceTab(QWidget):
     """A widget for a single workspace, containing its own git tools."""
@@ -144,8 +145,13 @@ class WorkspaceTab(QWidget):
         self.assignee_input = QLineEdit(get_config_value(gitlab_config, 'assignee'))
         self.reviewer_input = QLineEdit(get_config_value(gitlab_config, 'reviewer'))
 
+
         self.source_branch_combo = QComboBox()
         self.refresh_branches_button = QPushButton('刷新本地分支')
+        
+        self.mr_target_branch_combo = QComboBox()
+        self.refresh_mr_target_branches_button = QPushButton('刷新远程分支')
+
         self.mr_title_input = QLineEdit()
         self.mr_description_input = QTextEdit()
         self.create_mr_button = QPushButton('创建合并请求')
@@ -162,6 +168,11 @@ class WorkspaceTab(QWidget):
         source_branch_layout.addWidget(self.refresh_branches_button)
         layout.addRow('源分支:', source_branch_layout)
 
+        target_branch_layout = QHBoxLayout()
+        target_branch_layout.addWidget(self.mr_target_branch_combo)
+        target_branch_layout.addWidget(self.refresh_mr_target_branches_button)
+        layout.addRow('目标分支:', target_branch_layout)
+
         layout.addRow('标题:', self.mr_title_input)
         layout.addRow('描述:', self.mr_description_input)
 
@@ -169,7 +180,8 @@ class WorkspaceTab(QWidget):
         layout.addRow(self.mr_output)
 
         self.refresh_branches_button.clicked.connect(self.run_refresh_branches)
-        self.source_branch_combo.currentIndexChanged.connect(self.update_mr_defaults)
+        self.refresh_mr_target_branches_button.clicked.connect(self.run_refresh_mr_target_branches)
+        self.source_branch_combo.currentIndexChanged.connect(self.update_mr_fields)
         self.create_mr_button.clicked.connect(self.run_create_mr)
 
         self.create_mr_tab.setLayout(layout)
@@ -218,7 +230,35 @@ class WorkspaceTab(QWidget):
         self.source_branch_combo.addItems(valid_branches)
         self.mr_output.setText(message)
         if valid_branches:
-            self.update_mr_defaults()
+            self.update_mr_fields()
+
+    def run_refresh_mr_target_branches(self):
+        self.mr_target_branch_combo.clear()
+        self.mr_output.setText('正在刷新远程分支...')
+        QApplication.processEvents()
+
+        branches, message = get_remote_branches(self.path)
+        self.mr_target_branch_combo.addItems(branches)
+        self.mr_output.setText(message)
+        # After refreshing, try to update fields again
+        self.update_mr_fields()
+
+    def update_mr_fields(self):
+        source_branch = self.source_branch_combo.currentText()
+        if not source_branch:
+            return
+
+        parsed_target = parse_target_branch_from_source(source_branch)
+        if parsed_target:
+            index = self.mr_target_branch_combo.findText(parsed_target, Qt.MatchFixedString)
+            if index >= 0:
+                self.mr_target_branch_combo.setCurrentIndex(index)
+            else:
+                # If not found, maybe add it or show a warning
+                self.mr_output.setText(f'警告: 从源分支解析的目标分支 "{parsed_target}" 在远程分支列表中未找到。')
+
+        # Update title and description defaults
+        self.update_mr_defaults()
 
     def update_mr_defaults(self):
         source_branch = self.source_branch_combo.currentText()
@@ -255,7 +295,8 @@ class WorkspaceTab(QWidget):
             self.reviewer_input.text(),
             self.source_branch_combo.currentText(),
             self.mr_title_input.text(),
-            self.mr_description_input.toPlainText()
+            self.mr_description_input.toPlainText(),
+            target_branch=self.mr_target_branch_combo.currentText()
         )
         self.mr_output.setText(output)
 
