@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="UTF-8"?>
+<?xml version='1.0' encoding='UTF-8'?>
 <config>
     <gitlab>
         <gitlab_url>http://pd-gitlab.toppanecquaria.com:10080</gitlab_url>
@@ -25,4 +25,5 @@ TG-
 - [x] I have performed a self-review of the code
 - [x] No conflict with target branch</description_template>
     </gitlab>
-</config>
+
+<workspaces /></config>

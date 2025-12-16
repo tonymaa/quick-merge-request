@@ -1,62 +1,43 @@
 import sys
 import xml.etree.ElementTree as ET
-from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QLineEdit, QPushButton, QFileDialog, QLabel, QTextEdit, QComboBox, QFormLayout
+from PyQt5.QtWidgets import (
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QLineEdit, 
+    QPushButton, QFileDialog, QLabel, QTextEdit, QComboBox, QFormLayout, QInputDialog
+)
+from PyQt5.QtCore import Qt
 
 # Import refactored functions
 from quick_create_branch import create_branch as create_branch_func, get_remote_branches
 from quick_generate_mr_form import get_local_branches, generate_mr, get_mr_defaults
 
-class App(QWidget):
-    def __init__(self):
+class WorkspaceTab(QWidget):
+    """A widget for a single workspace, containing its own git tools."""
+    def __init__(self, path, config):
         super().__init__()
-        self.title = 'GitLab Quick Tool'
-        self.left = 100
-        self.top = 100
-        self.width = 800
-        self.height = 700
-        self.config = self.load_config()
+        self.path = path
+        self.config = config
         self.initUI()
 
-    def load_config(self):
-        try:
-            tree = ET.parse('config.xml')
-            root = tree.getroot()
-            return root
-        except (FileNotFoundError, ET.ParseError):
-            return None
-
     def initUI(self):
-        self.setWindowTitle(self.title)
-        self.setGeometry(self.left, self.top, self.width, self.height)
+        # This will contain the 'Create Branch' and 'Create MR' tabs
+        self.tools_tabs = QTabWidget()
+        self.create_branch_tab = QWidget()
+        self.create_mr_tab = QWidget()
 
-        main_layout = QVBoxLayout()
+        self.tools_tabs.addTab(self.create_branch_tab, 'Create Branch')
+        self.tools_tabs.addTab(self.create_mr_tab, 'Create Merge Request')
 
-        # Workspace Directory Selector
-        dir_layout = QHBoxLayout()
-        self.dir_label = QLabel('Workspace Directory:')
-        self.dir_input = QLineEdit()
-        self.dir_button = QPushButton('Browse...')
-        self.dir_button.clicked.connect(self.browse_directory)
-        dir_layout.addWidget(self.dir_label)
-        dir_layout.addWidget(self.dir_input)
-        dir_layout.addWidget(self.dir_button)
-        main_layout.addLayout(dir_layout)
-
-        # Tabs
-        self.tabs = QTabWidget()
-        self.tab1 = QWidget()
-        self.tab2 = QWidget()
-        self.tabs.addTab(self.tab1, 'Create Branch')
-        self.tabs.addTab(self.tab2, 'Create Merge Request')
-
-        # Tab 1: Create Branch
+        # Initialize the content of each tool tab
         self.init_create_branch_tab()
-
-        # Tab 2: Create Merge Request
         self.init_create_mr_tab()
 
-        main_layout.addWidget(self.tabs)
-        self.setLayout(main_layout)
+        layout = QVBoxLayout()
+        layout.addWidget(self.tools_tabs)
+        self.setLayout(layout)
+        
+        # Initial data load
+        self.run_refresh_remote_branches()
+        self.run_refresh_branches()
 
     def init_create_branch_tab(self):
         layout = QFormLayout()
@@ -80,7 +61,7 @@ class App(QWidget):
         self.create_branch_button.clicked.connect(self.run_create_branch)
         self.refresh_remote_branches_button.clicked.connect(self.run_refresh_remote_branches)
 
-        self.tab1.setLayout(layout)
+        self.create_branch_tab.setLayout(layout)
 
     def init_create_mr_tab(self):
         layout = QFormLayout()
@@ -126,64 +107,41 @@ class App(QWidget):
         self.source_branch_combo.currentIndexChanged.connect(self.update_mr_defaults)
         self.create_mr_button.clicked.connect(self.run_create_mr)
 
-        self.tab2.setLayout(layout)
-
-    def browse_directory(self):
-        directory = QFileDialog.getExistingDirectory(self, "Select Workspace Directory")
-        if directory:
-            self.dir_input.setText(directory)
-            self.run_refresh_branches()
-            self.run_refresh_remote_branches()
+        self.create_mr_tab.setLayout(layout)
 
     def run_create_branch(self):
-        directory = self.dir_input.text()
-        if not directory:
-            self.create_branch_output.setText('Please select a workspace directory first.')
-            return
-
         target_branch = self.target_branch_combo.currentText()
         new_branch = self.new_branch_input.text()
 
         self.create_branch_output.setText('Processing...')
         QApplication.processEvents()
         
-        output = create_branch_func(directory, target_branch, new_branch)
+        output = create_branch_func(self.path, target_branch, new_branch)
         self.create_branch_output.setText(output)
 
     def run_refresh_remote_branches(self):
-        directory = self.dir_input.text()
-        if not directory:
-            self.create_branch_output.setText('Please select a workspace directory first.')
-            return
-
         self.target_branch_combo.clear()
         self.create_branch_output.setText('Refreshing remote branches...')
         QApplication.processEvents()
 
-        branches, message = get_remote_branches(directory)
+        branches, message = get_remote_branches(self.path)
         self.target_branch_combo.addItems(branches)
         self.create_branch_output.setText(message)
 
     def run_refresh_branches(self):
-        directory = self.dir_input.text()
-        if not directory:
-            self.mr_output.setText('Please select a workspace directory first.')
-            return
-        
         self.source_branch_combo.clear()
         self.mr_output.setText('Loading local branches...') 
         QApplication.processEvents()
 
-        valid_branches, message = get_local_branches(directory)
+        valid_branches, message = get_local_branches(self.path)
         self.source_branch_combo.addItems(valid_branches)
         self.mr_output.setText(message)
         if valid_branches:
             self.update_mr_defaults()
 
     def update_mr_defaults(self):
-        directory = self.dir_input.text()
         source_branch = self.source_branch_combo.currentText()
-        if not directory or not source_branch:
+        if not source_branch:
             return
 
         gitlab_config = self.config.find('gitlab') if self.config is not None else None
@@ -197,7 +155,7 @@ class App(QWidget):
         title_template = get_config_value(gitlab_config, 'title_template', 'Draft: {commit_message}')
         description_template = get_config_value(gitlab_config, 'description_template', '{commit_message}')
 
-        defaults, error = get_mr_defaults(directory, source_branch, title_template, description_template)
+        defaults, error = get_mr_defaults(self.path, source_branch, title_template, description_template)
         if error:
             self.mr_output.setText(error)
         else:
@@ -205,16 +163,11 @@ class App(QWidget):
             self.mr_description_input.setPlainText(defaults['description'])
 
     def run_create_mr(self):
-        directory = self.dir_input.text()
-        if not directory:
-            self.mr_output.setText('Please select a workspace directory first.')
-            return
-
         self.mr_output.setText('Processing...')
         QApplication.processEvents()
 
         output = generate_mr(
-            directory,
+            self.path,
             self.gitlab_url_input.text(),
             self.token_input.text(),
             self.assignee_input.text(),
@@ -224,6 +177,111 @@ class App(QWidget):
             self.mr_description_input.toPlainText()
         )
         self.mr_output.setText(output)
+
+class App(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.title = 'GitLab Quick Tool'
+        self.left = 100
+        self.top = 100
+        self.width = 800
+        self.height = 700
+        self.config = self.load_config()
+        self.initUI()
+
+    def load_config(self):
+        try:
+            tree = ET.parse('config.xml')
+            root = tree.getroot()
+            return root
+        except (FileNotFoundError, ET.ParseError):
+            # Create a default config if not found
+            root = ET.Element('config')
+            ET.SubElement(root, 'gitlab')
+            workspaces = ET.SubElement(root, 'workspaces')
+            tree = ET.ElementTree(root)
+            tree.write('config.xml', encoding='UTF-8', xml_declaration=True)
+            return root
+
+    def save_config(self):
+        if self.config is not None:
+            workspaces_node = self.config.find('workspaces')
+            if workspaces_node is None:
+                workspaces_node = ET.SubElement(self.config, 'workspaces')
+            
+            # Clear existing workspace nodes
+            for ws in workspaces_node.findall('workspace'):
+                workspaces_node.remove(ws)
+
+            # Add current workspaces from tabs
+            for i in range(self.workspace_tabs.count()):
+                tab_widget = self.workspace_tabs.widget(i)
+                if isinstance(tab_widget, WorkspaceTab):
+                    ET.SubElement(workspaces_node, 'workspace', {
+                        'name': self.workspace_tabs.tabText(i),
+                        'path': tab_widget.path
+                    })
+            
+            tree = ET.ElementTree(self.config)
+            tree.write('config.xml', encoding='UTF-8', xml_declaration=True)
+
+    def initUI(self):
+        self.setWindowTitle(self.title)
+        self.setGeometry(self.left, self.top, self.width, self.height)
+
+        main_layout = QVBoxLayout()
+
+        # Workspace management buttons
+        workspace_buttons_layout = QHBoxLayout()
+        self.add_workspace_button = QPushButton('Add Workspace')
+        workspace_buttons_layout.addWidget(self.add_workspace_button)
+        main_layout.addLayout(workspace_buttons_layout)
+
+        # Workspace Tabs
+        self.workspace_tabs = QTabWidget()
+        self.workspace_tabs.setTabsClosable(True)
+        self.workspace_tabs.tabCloseRequested.connect(self.remove_workspace_tab)
+        main_layout.addWidget(self.workspace_tabs)
+
+        self.setLayout(main_layout)
+
+        # Connect buttons
+        self.add_workspace_button.clicked.connect(self.add_workspace)
+
+        # Load workspaces from config
+        self.load_workspaces()
+
+    def load_workspaces(self):
+        if self.config is not None:
+            workspaces_node = self.config.find('workspaces')
+            if workspaces_node is not None:
+                for ws in workspaces_node.findall('workspace'):
+                    name = ws.get('name')
+                    path = ws.get('path')
+                    if name and path:
+                        self.add_workspace_tab(name, path)
+
+    def add_workspace(self):
+        path = QFileDialog.getExistingDirectory(self, "Select Workspace Directory")
+        if path:
+            name, ok = QInputDialog.getText(self, 'Workspace Name', 'Enter a name for this workspace:', text=path.split('/')[-1])
+            if ok and name:
+                self.add_workspace_tab(name, path)
+                self.save_config() # Save after adding
+
+    def add_workspace_tab(self, name, path):
+        tab = WorkspaceTab(path, self.config)
+        self.workspace_tabs.addTab(tab, name)
+        self.workspace_tabs.setCurrentWidget(tab)
+
+    def remove_workspace_tab(self, index):
+        if index >= 0:
+            self.workspace_tabs.removeTab(index)
+            self.save_config() # Save after removing
+
+    def closeEvent(self, event):
+        self.save_config()
+        event.accept()
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
