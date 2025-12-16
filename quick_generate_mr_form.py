@@ -65,7 +65,6 @@ def generate_mr(directory, gitlab_url, token, assignee_user, reviewer_user, sour
     except IndexError:
         return "Assignee or Reviewer not found."
 
-    print(assignee.id + ', ' + reviewer.id)
     mr_data = {
         'source_branch': source_branch,
         'target_branch': target_branch,
