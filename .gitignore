@@ -1,0 +1,9 @@
+.idea/.gitignore
+.idea/gitlab-quickmr.xml
+.idea/google-java-format.xml
+.idea/misc.xml
+.idea/modules.xml
+.idea/quick_merge_request.iml
+.idea/vcs.xml
+__pycache__/quick_create_branch.cpython-310.pyc
+__pycache__/quick_generate_mr_form.cpython-310.pyc
