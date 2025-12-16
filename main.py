@@ -2,7 +2,8 @@ import sys
 import xml.etree.ElementTree as ET
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QLineEdit, 
-    QPushButton, QFileDialog, QLabel, QTextEdit, QComboBox, QFormLayout, QInputDialog
+    QPushButton, QFileDialog, QLabel, QTextEdit, QComboBox, QFormLayout, QInputDialog,
+    QMessageBox
 )
 from PyQt5.QtCore import Qt
 
@@ -275,7 +276,15 @@ class App(QWidget):
         self.workspace_tabs.setCurrentWidget(tab)
 
     def remove_workspace_tab(self, index):
-        if index >= 0:
+        if index < 0:
+            return
+
+        tab_name = self.workspace_tabs.tabText(index)
+        reply = QMessageBox.question(self, 'Confirm Remove',
+                                     f"Are you sure you want to remove the workspace '{tab_name}'?",
+                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+
+        if reply == QMessageBox.Yes:
             self.workspace_tabs.removeTab(index)
             self.save_config() # Save after removing
 
