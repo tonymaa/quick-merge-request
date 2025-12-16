@@ -26,8 +26,8 @@ class WorkspaceTab(QWidget):
         self.create_branch_tab = QWidget()
         self.create_mr_tab = QWidget()
 
-        self.tools_tabs.addTab(self.create_branch_tab, 'Create Branch')
-        self.tools_tabs.addTab(self.create_mr_tab, 'Create Merge Request')
+        self.tools_tabs.addTab(self.create_branch_tab, '创建分支')
+        self.tools_tabs.addTab(self.create_mr_tab, '创建合并请求')
 
         # Initialize the content of each tool tab
         self.init_create_branch_tab()
@@ -45,9 +45,9 @@ class WorkspaceTab(QWidget):
         layout = QFormLayout()
 
         self.target_branch_combo = QComboBox()
-        self.refresh_remote_branches_button = QPushButton('Refresh Remote Branches')
+        self.refresh_remote_branches_button = QPushButton('刷新远程分支')
         self.new_branch_input = QLineEdit('zhiming/xx1')
-        self.create_branch_button = QPushButton('Create Branch')
+        self.create_branch_button = QPushButton('创建分支')
         self.create_branch_output = QTextEdit()
         self.create_branch_output.setReadOnly(True)
 
@@ -55,8 +55,8 @@ class WorkspaceTab(QWidget):
         target_branch_layout.addWidget(self.target_branch_combo)
         target_branch_layout.addWidget(self.refresh_remote_branches_button)
 
-        layout.addRow('Target Branch:', target_branch_layout)
-        layout.addRow('New Branch Name:', self.new_branch_input)
+        layout.addRow('目标分支:', target_branch_layout)
+        layout.addRow('新分支名:', self.new_branch_input)
         layout.addRow(self.create_branch_button)
         layout.addRow(self.create_branch_output)
 
@@ -82,25 +82,25 @@ class WorkspaceTab(QWidget):
         self.reviewer_input = QLineEdit(get_config_value(gitlab_config, 'reviewer'))
 
         self.source_branch_combo = QComboBox()
-        self.refresh_branches_button = QPushButton('Refresh Branches')
+        self.refresh_branches_button = QPushButton('刷新本地分支')
         self.mr_title_input = QLineEdit()
         self.mr_description_input = QTextEdit()
-        self.create_mr_button = QPushButton('Create MR')
+        self.create_mr_button = QPushButton('创建合并请求')
         self.mr_output = QTextEdit()
         self.mr_output.setReadOnly(True)
 
-        layout.addRow('GitLab URL:', self.gitlab_url_input)
-        layout.addRow('Private Token:', self.token_input)
-        layout.addRow('Assignee:', self.assignee_input)
-        layout.addRow('Reviewer:', self.reviewer_input)
+        layout.addRow('GitLab 地址:', self.gitlab_url_input)
+        layout.addRow('私有 Token:', self.token_input)
+        layout.addRow('指派给:', self.assignee_input)
+        layout.addRow('审查者:', self.reviewer_input)
 
         source_branch_layout = QHBoxLayout()
         source_branch_layout.addWidget(self.source_branch_combo)
         source_branch_layout.addWidget(self.refresh_branches_button)
-        layout.addRow('Source Branch:', source_branch_layout)
+        layout.addRow('源分支:', source_branch_layout)
 
-        layout.addRow('Title:', self.mr_title_input)
-        layout.addRow('Description:', self.mr_description_input)
+        layout.addRow('标题:', self.mr_title_input)
+        layout.addRow('描述:', self.mr_description_input)
 
         layout.addRow(self.create_mr_button)
         layout.addRow(self.mr_output)
@@ -115,7 +115,7 @@ class WorkspaceTab(QWidget):
         target_branch = self.target_branch_combo.currentText()
         new_branch = self.new_branch_input.text()
 
-        self.create_branch_output.setText('Processing...')
+        self.create_branch_output.setText('处理中...')
         QApplication.processEvents()
         
         output = create_branch_func(self.path, target_branch, new_branch)
@@ -123,7 +123,7 @@ class WorkspaceTab(QWidget):
 
     def run_refresh_remote_branches(self):
         self.target_branch_combo.clear()
-        self.create_branch_output.setText('Refreshing remote branches...')
+        self.create_branch_output.setText('正在刷新远程分支...')
         QApplication.processEvents()
 
         branches, message = get_remote_branches(self.path)
@@ -132,7 +132,7 @@ class WorkspaceTab(QWidget):
 
     def run_refresh_branches(self):
         self.source_branch_combo.clear()
-        self.mr_output.setText('Loading local branches...') 
+        self.mr_output.setText('正在加载本地分支...') 
         QApplication.processEvents()
 
         valid_branches, message = get_local_branches(self.path)
@@ -165,7 +165,7 @@ class WorkspaceTab(QWidget):
             self.mr_description_input.setPlainText(defaults['description'])
 
     def run_create_mr(self):
-        self.mr_output.setText('Processing...')
+        self.mr_output.setText('处理中...')
         QApplication.processEvents()
 
         output = generate_mr(
@@ -183,7 +183,7 @@ class WorkspaceTab(QWidget):
 class App(QWidget):
     def __init__(self):
         super().__init__()
-        self.title = 'GitLab Quick Tool'
+        self.title = 'GitLab 快捷工具'
         self.left = 100
         self.top = 100
         self.width = 800
@@ -235,7 +235,7 @@ class App(QWidget):
 
         # Workspace management buttons
         workspace_buttons_layout = QHBoxLayout()
-        self.add_workspace_button = QPushButton('Add Workspace')
+        self.add_workspace_button = QPushButton('添加工作目录')
         workspace_buttons_layout.addWidget(self.add_workspace_button)
         main_layout.addLayout(workspace_buttons_layout)
 
@@ -264,18 +264,18 @@ class App(QWidget):
                     if name and path and os.path.isdir(path):
                         self.add_workspace_tab(name, path)
                     else:
-                        removed_workspaces.append(name or path or 'Unnamed Workspace')
+                        removed_workspaces.append(name or path or '未命名工作区')
                         workspaces_node.remove(ws)
                 
                 if removed_workspaces:
                     self.save_config() # Persist the removal
-                    QMessageBox.warning(self, 'Invalid Workspaces Removed',
-                                        'The following workspaces had invalid paths and were automatically removed:\n\n' + '\n'.join(removed_workspaces))
+                    QMessageBox.warning(self, '移除无效的工作区',
+                                        '以下工作区的路径无效，已被自动移除：\n\n' + '\n'.join(removed_workspaces))
 
     def add_workspace(self):
-        path = QFileDialog.getExistingDirectory(self, "Select Workspace Directory")
+        path = QFileDialog.getExistingDirectory(self, "选择工作区目录")
         if path:
-            name, ok = QInputDialog.getText(self, 'Workspace Name', 'Enter a name for this workspace:', text=path.split('/')[-1])
+            name, ok = QInputDialog.getText(self, '工作区名称', '为这个工作区输入一个名称:', text=path.split('/')[-1])
             if ok and name:
                 self.add_workspace_tab(name, path)
                 self.save_config() # Save after adding
@@ -290,8 +290,8 @@ class App(QWidget):
             return
 
         tab_name = self.workspace_tabs.tabText(index)
-        reply = QMessageBox.question(self, 'Confirm Remove',
-                                     f"Are you sure you want to remove the workspace '{tab_name}'?",
+        reply = QMessageBox.question(self, '确认移除',
+                                     f"您确定要移除工作区 '{tab_name}'吗？",
                                      QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
 
         if reply == QMessageBox.Yes:
