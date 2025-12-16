@@ -4,7 +4,7 @@ import xml.etree.ElementTree as ET
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QLineEdit, 
     QPushButton, QFileDialog, QLabel, QTextEdit, QComboBox, QFormLayout, QInputDialog,
-    QMessageBox
+    QMessageBox, QListWidget, QAbstractItemView
 )
 from PyQt5.QtCore import Qt
 
@@ -44,19 +44,22 @@ class WorkspaceTab(QWidget):
     def init_create_branch_tab(self):
         layout = QFormLayout()
 
-        self.target_branch_combo = QComboBox()
-        self.refresh_remote_branches_button = QPushButton('刷新远程分支')
         self.new_branch_input = QLineEdit('zhiming/xx1')
+        
+        self.target_branch_list = QListWidget()
+        self.target_branch_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.refresh_remote_branches_button = QPushButton('刷新远程分支')
+        
         self.create_branch_button = QPushButton('创建分支')
         self.create_branch_output = QTextEdit()
         self.create_branch_output.setReadOnly(True)
 
         target_branch_layout = QHBoxLayout()
-        target_branch_layout.addWidget(self.target_branch_combo)
+        target_branch_layout.addWidget(self.target_branch_list)
         target_branch_layout.addWidget(self.refresh_remote_branches_button)
 
-        layout.addRow('目标分支:', target_branch_layout)
         layout.addRow('新分支名:', self.new_branch_input)
+        layout.addRow('目标分支 (可多选):', target_branch_layout)
         layout.addRow(self.create_branch_button)
         layout.addRow(self.create_branch_output)
 
@@ -112,22 +115,31 @@ class WorkspaceTab(QWidget):
         self.create_mr_tab.setLayout(layout)
 
     def run_create_branch(self):
-        target_branch = self.target_branch_combo.currentText()
+        selected_items = self.target_branch_list.selectedItems()
+        if not selected_items:
+            self.create_branch_output.setText('请至少选择一个目标分支。')
+            return
+            
+        target_branches = [item.text() for item in selected_items]
         new_branch = self.new_branch_input.text()
 
         self.create_branch_output.setText('处理中...')
         QApplication.processEvents()
         
-        output = create_branch_func(self.path, target_branch, new_branch)
-        self.create_branch_output.setText(output)
+        all_output = []
+        for target_branch in target_branches:
+            output = create_branch_func(self.path, target_branch, new_branch)
+            all_output.append(f'--- 对于目标分支: {target_branch} ---\n{output}')
+        
+        self.create_branch_output.setText('\n\n'.join(all_output))
 
     def run_refresh_remote_branches(self):
-        self.target_branch_combo.clear()
+        self.target_branch_list.clear()
         self.create_branch_output.setText('正在刷新远程分支...')
         QApplication.processEvents()
 
         branches, message = get_remote_branches(self.path)
-        self.target_branch_combo.addItems(branches)
+        self.target_branch_list.addItems(branches)
         self.create_branch_output.setText(message)
 
     def run_refresh_branches(self):
