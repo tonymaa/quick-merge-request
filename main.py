@@ -269,8 +269,8 @@ class WorkspaceTab(QWidget):
         combo.setCompleter(completer)
 
     def run_refresh_users(self):
-        self.assignee_combo.clear()
-        self.reviewer_combo.clear()
+        # self.assignee_combo.clear()
+        # self.reviewer_combo.clear()
         self.mr_output.setText('正在刷新用户...')
         QApplication.processEvents()
         gitlab_config = self.config.find('gitlab') if self.config is not None else None

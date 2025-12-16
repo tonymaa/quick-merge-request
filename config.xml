@@ -3,9 +3,9 @@
     <new_branch_prefix>zhiming/</new_branch_prefix>
     <gitlab>
         <gitlab_url>http://pd-gitlab.toppanecquaria.com:10080</gitlab_url>
-        <private_token>your_private_token</private_token>
-        <assignee />
-        <reviewer />
+        <private_token>glpat-1JeC8uvfQ9MoWsdzxyDy</private_token>
+        <assignee>yuhan</assignee>
+        <reviewer>lixiang</reviewer>
         <title_template>{commit_message}</title_template>
         <description_template>## Description of Changes
 
