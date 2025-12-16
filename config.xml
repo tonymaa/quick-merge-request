@@ -1,6 +1,6 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <config>
-    <new_branch_prefix>/zhiming</new_branch_prefix>
+    <new_branch_prefix>zhiming/</new_branch_prefix>
     <gitlab>
         <gitlab_url>http://pd-gitlab.toppanecquaria.com:10080</gitlab_url>
         <private_token>your_private_token</private_token>
