@@ -44,8 +44,10 @@ class WorkspaceTab(QWidget):
 
     def init_create_branch_tab(self):
         layout = QFormLayout()
-
-        self.new_branch_input = QLineEdit('zhiming/xx1')
+        new_branch_prefix = ''
+        if self.config.find('new_branch_prefix') is not None:
+            new_branch_prefix = self.config.find('new_branch_prefix').text
+        self.new_branch_input = QLineEdit(new_branch_prefix)
         layout.addRow('新分支名:', self.new_branch_input)
 
         # Search box for available branches
