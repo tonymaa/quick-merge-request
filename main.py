@@ -14,10 +14,11 @@ from quick_generate_mr_form import get_local_branches, generate_mr, get_mr_defau
 
 class WorkspaceTab(QWidget):
     """A widget for a single workspace, containing its own git tools."""
-    def __init__(self, path, config):
+    def __init__(self, path, config, workspace_config):
         super().__init__()
         self.path = path
         self.config = config
+        self.workspace_config = workspace_config
         self.initUI()
 
     def initUI(self):
@@ -47,12 +48,20 @@ class WorkspaceTab(QWidget):
         self.new_branch_input = QLineEdit('zhiming/xx1')
         layout.addRow('新分支名:', self.new_branch_input)
 
+        # Search box for available branches
+        self.branch_search_input = QLineEdit()
+        self.branch_search_input.setPlaceholderText('搜索分支...')
+        self.branch_search_input.textChanged.connect(self.filter_available_branches)
+
         # Shuttle box for target branches
         shuttle_layout = QHBoxLayout()
 
-        # Available branches list
+        # Available branches list with search
+        available_layout = QVBoxLayout()
+        available_layout.addWidget(self.branch_search_input)
         self.available_branches_list = QListWidget()
         self.available_branches_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        available_layout.addWidget(self.available_branches_list)
 
         # Buttons for moving items
         move_buttons_layout = QVBoxLayout()
@@ -66,8 +75,11 @@ class WorkspaceTab(QWidget):
         # Selected target branches list
         self.target_branch_list = QListWidget()
         self.target_branch_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        if self.workspace_config is not None:
+            for branch_node in self.workspace_config.findall('target_branch'):
+                self.target_branch_list.addItem(branch_node.text)
 
-        shuttle_layout.addWidget(self.available_branches_list)
+        shuttle_layout.addLayout(available_layout)
         shuttle_layout.addLayout(move_buttons_layout)
         shuttle_layout.addWidget(self.target_branch_list)
 
@@ -94,12 +106,18 @@ class WorkspaceTab(QWidget):
 
         self.create_branch_tab.setLayout(layout)
 
+    def filter_available_branches(self, text):
+        for i in range(self.available_branches_list.count()):
+            item = self.available_branches_list.item(i)
+            item.setHidden(text.lower() not in item.text().lower())
+
     def move_to_target(self):
         selected_items = self.available_branches_list.selectedItems()
         for item in selected_items:
             # Move item from available to target
-            self.target_branch_list.addItem(item.text())
-            self.available_branches_list.takeItem(self.available_branches_list.row(item))
+            if not item.isHidden():
+                self.target_branch_list.addItem(item.text())
+                self.available_branches_list.takeItem(self.available_branches_list.row(item))
 
     def remove_from_target(self):
         selected_items = self.target_branch_list.selectedItems()
@@ -174,12 +192,19 @@ class WorkspaceTab(QWidget):
 
     def run_refresh_remote_branches(self):
         self.available_branches_list.clear()
-        self.target_branch_list.clear()
+        # Don't clear the target list, as it's loaded from config
+        # self.target_branch_list.clear()
         self.create_branch_output.setText('正在刷新远程分支...')
         QApplication.processEvents()
 
         branches, message = get_remote_branches(self.path)
-        self.available_branches_list.addItems(branches)
+        
+        # Get current target branches to exclude them from the available list
+        target_branches = {self.target_branch_list.item(i).text() for i in range(self.target_branch_list.count())}
+        
+        available_branches = [b for b in branches if b not in target_branches]
+        self.available_branches_list.addItems(available_branches)
+        
         self.create_branch_output.setText(message)
 
     def run_refresh_branches(self):
@@ -271,10 +296,14 @@ class App(QWidget):
             for i in range(self.workspace_tabs.count()):
                 tab_widget = self.workspace_tabs.widget(i)
                 if isinstance(tab_widget, WorkspaceTab):
-                    ET.SubElement(workspaces_node, 'workspace', {
+                    ws_node = ET.SubElement(workspaces_node, 'workspace', {
                         'name': self.workspace_tabs.tabText(i),
                         'path': tab_widget.path
                     })
+                    # Save target branches
+                    for j in range(tab_widget.target_branch_list.count()):
+                        branch_name = tab_widget.target_branch_list.item(j).text()
+                        ET.SubElement(ws_node, 'target_branch').text = branch_name
             
             tree = ET.ElementTree(self.config)
             tree.write('config.xml', encoding='UTF-8', xml_declaration=True)
@@ -314,7 +343,7 @@ class App(QWidget):
                     name = ws.get('name')
                     path = ws.get('path')
                     if name and path and os.path.isdir(path):
-                        self.add_workspace_tab(name, path)
+                        self.add_workspace_tab(name, path, ws)
                     else:
                         removed_workspaces.append(name or path or '未命名工作区')
                         workspaces_node.remove(ws)
@@ -329,11 +358,11 @@ class App(QWidget):
         if path:
             name, ok = QInputDialog.getText(self, '工作区名称', '为这个工作区输入一个名称:', text=path.split('/')[-1])
             if ok and name:
-                self.add_workspace_tab(name, path)
+                self.add_workspace_tab(name, path, None)
                 self.save_config() # Save after adding
 
-    def add_workspace_tab(self, name, path):
-        tab = WorkspaceTab(path, self.config)
+    def add_workspace_tab(self, name, path, workspace_config):
+        tab = WorkspaceTab(path, self.config, workspace_config)
         self.workspace_tabs.addTab(tab, name)
         self.workspace_tabs.setCurrentWidget(tab)
 

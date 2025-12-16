@@ -26,4 +26,4 @@ TG-
 - [x] No conflict with target branch</description_template>
     </gitlab>
 
-<workspaces><workspace name="tecq-lowcode-editor" path="E:/lowcode/fe/tecq-lowcode-editor" /></workspaces></config>
+<workspaces><workspace name="tecq-lowcode-editor" path="E:/lowcode/fe/tecq-lowcode-editor"><target_branch>DEV_RELEASE_1</target_branch><target_branch>4.0.2-hotpatch</target_branch><target_branch>DEV_MVP</target_branch></workspace></workspaces></config>
