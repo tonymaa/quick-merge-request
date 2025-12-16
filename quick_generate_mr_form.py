@@ -5,7 +5,6 @@ import subprocess
 
 def run_command(command, directory):
     try:
-        # Set shell=False for security and correctness when passing a list
         result = subprocess.run(command, cwd=directory, capture_output=True, text=True, check=True, shell=False)
         return result.stdout, None
     except subprocess.CalledProcessError as e:
@@ -38,7 +37,7 @@ def parse_target_branch_from_source(source_branch):
     except Exception:
         return None
 
-def generate_mr(directory, gitlab_url, token, assignee_user, reviewer_user, source_branch, target_branch, title, description):
+def generate_mr(directory, gitlab_url, token, assignee_user, reviewer_user, source_branch, title, description):
     try:
         gl = gitlab.Gitlab(url=gitlab_url, private_token=token)
         gl.auth()
@@ -47,8 +46,8 @@ def generate_mr(directory, gitlab_url, token, assignee_user, reviewer_user, sour
 
     if not source_branch:
         return 'Please select a source branch.'
-    if not target_branch:
-        return 'Please select a target branch.'
+
+    target_branch = source_branch.split('__from__')[1].replace('@', '/')
     
     # Get project
     stdout, stderr = run_command(['git', 'remote', '-v'], directory)
@@ -79,3 +78,16 @@ def generate_mr(directory, gitlab_url, token, assignee_user, reviewer_user, sour
         return f'Successfully created MR!\nURL: {mr.web_url}'
     except Exception as e:
         return f'Failed to create MR: {e}'
+
+def get_gitlab_usernames(gitlab_url, token):
+    try:
+        gl = gitlab.Gitlab(url=gitlab_url, private_token=token)
+        gl.auth()
+    except Exception as e:
+        return [], f'GitLab authentication failed: {e}'
+    try:
+        users = gl.users.list(all=True)
+        usernames = [u.username for u in users if getattr(u, 'username', None)]
+        return usernames, None
+    except Exception as e:
+        return [], f'Failed to load users: {e}'

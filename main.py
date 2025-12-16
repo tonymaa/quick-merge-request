@@ -11,7 +11,7 @@ from PyQt5.QtCore import Qt
 
 # Import refactored functions
 from quick_create_branch import create_branch as create_branch_func, get_remote_branches
-from quick_generate_mr_form import get_local_branches, generate_mr, get_mr_defaults, parse_target_branch_from_source
+from quick_generate_mr_form import get_local_branches, generate_mr, get_mr_defaults, parse_target_branch_from_source, get_gitlab_usernames
 
 class WorkspaceTab(QWidget):
     """A widget for a single workspace, containing its own git tools."""
@@ -43,6 +43,7 @@ class WorkspaceTab(QWidget):
         self.run_refresh_remote_branches()
         self.run_refresh_branches()
         self.run_refresh_mr_target_branches()
+        self.run_refresh_users()
 
     def init_create_branch_tab(self):
         layout = QFormLayout()
@@ -143,8 +144,9 @@ class WorkspaceTab(QWidget):
 
         self.gitlab_url_input = QLineEdit(get_config_value(gitlab_config, 'gitlab_url'))
         self.token_input = QLineEdit(get_config_value(gitlab_config, 'private_token'))
-        self.assignee_input = QLineEdit(get_config_value(gitlab_config, 'assignee'))
-        self.reviewer_input = QLineEdit(get_config_value(gitlab_config, 'reviewer'))
+        self.assignee_combo = QComboBox()
+        self.reviewer_combo = QComboBox()
+        self.refresh_users_button = QPushButton('刷新用户')
 
 
         self.source_branch_combo = QComboBox()
@@ -161,8 +163,11 @@ class WorkspaceTab(QWidget):
 
         layout.addRow('GitLab 地址:', self.gitlab_url_input)
         layout.addRow('私有 Token:', self.token_input)
-        layout.addRow('指派给:', self.assignee_input)
-        layout.addRow('审查者:', self.reviewer_input)
+        assignee_layout = QHBoxLayout()
+        assignee_layout.addWidget(self.assignee_combo)
+        assignee_layout.addWidget(self.refresh_users_button)
+        layout.addRow('指派给:', assignee_layout)
+        layout.addRow('审查者:', self.reviewer_combo)
 
         source_branch_layout = QHBoxLayout()
         source_branch_layout.addWidget(self.source_branch_combo)
@@ -184,11 +189,17 @@ class WorkspaceTab(QWidget):
         self.refresh_mr_target_branches_button.clicked.connect(self.run_refresh_mr_target_branches)
         self.source_branch_combo.currentIndexChanged.connect(self.update_mr_fields)
         self.create_mr_button.clicked.connect(self.run_create_mr)
+        self.refresh_users_button.clicked.connect(self.run_refresh_users)
+        self.assignee_combo.currentTextChanged.connect(self.save_gitlab_user_selection)
+        self.reviewer_combo.currentTextChanged.connect(self.save_gitlab_user_selection)
 
         self.create_mr_tab.setLayout(layout)
 
         self.enable_combo_search(self.source_branch_combo)
         self.enable_combo_search(self.mr_target_branch_combo)
+        self.enable_combo_search(self.assignee_combo)
+        self.enable_combo_search(self.reviewer_combo)
+        self.init_users_selection()
 
 
     def run_create_branch(self):
@@ -257,6 +268,63 @@ class WorkspaceTab(QWidget):
             completer.setFilterMode(Qt.MatchContains)
         combo.setCompleter(completer)
 
+    def run_refresh_users(self):
+        self.assignee_combo.clear()
+        self.reviewer_combo.clear()
+        self.mr_output.setText('正在刷新用户...')
+        QApplication.processEvents()
+        gitlab_config = self.config.find('gitlab') if self.config is not None else None
+        def get_config_value(element, tag, default=''):
+            if element is not None:
+                found = element.find(tag)
+                if found is not None and found.text:
+                    return found.text.strip()
+            return default
+        url = self.gitlab_url_input.text()
+        token = self.token_input.text()
+        users, error = get_gitlab_usernames(url, token)
+        if error:
+            self.mr_output.setText(error)
+            return
+        self.assignee_combo.addItems(users)
+        self.reviewer_combo.addItems(users)
+        self.init_users_selection()
+
+    def init_users_selection(self):
+        gitlab_config = self.config.find('gitlab') if self.config is not None else None
+        def get_config_value(element, tag, default=''):
+            if element is not None:
+                found = element.find(tag)
+                if found is not None and found.text:
+                    return found.text.strip()
+            return default
+        assignee_default = get_config_value(gitlab_config, 'assignee')
+        reviewer_default = get_config_value(gitlab_config, 'reviewer')
+        if assignee_default and self.assignee_combo.findText(assignee_default, Qt.MatchFixedString) >= 0:
+            self.assignee_combo.setCurrentText(assignee_default)
+        elif assignee_default and self.assignee_combo.count() == 0:
+            self.assignee_combo.addItem(assignee_default)
+            self.assignee_combo.setCurrentText(assignee_default)
+        if reviewer_default and self.reviewer_combo.findText(reviewer_default, Qt.MatchFixedString) >= 0:
+            self.reviewer_combo.setCurrentText(reviewer_default)
+        elif reviewer_default and self.reviewer_combo.count() == 0:
+            self.reviewer_combo.addItem(reviewer_default)
+            self.reviewer_combo.setCurrentText(reviewer_default)
+
+    def save_gitlab_user_selection(self):
+        gitlab_config = self.config.find('gitlab')
+        if gitlab_config is None:
+            gitlab_config = ET.SubElement(self.config, 'gitlab')
+        def set_child_text(parent, tag, text):
+            child = parent.find(tag)
+            if child is None:
+                child = ET.SubElement(parent, tag)
+            child.text = text
+        set_child_text(gitlab_config, 'assignee', self.assignee_combo.currentText())
+        set_child_text(gitlab_config, 'reviewer', self.reviewer_combo.currentText())
+        tree = ET.ElementTree(self.config)
+        tree.write('config.xml', encoding='UTF-8', xml_declaration=True)
+
     def update_mr_fields(self):
         source_branch = self.source_branch_combo.currentText()
         if not source_branch:
@@ -305,10 +373,9 @@ class WorkspaceTab(QWidget):
             self.path,
             self.gitlab_url_input.text(),
             self.token_input.text(),
-            self.assignee_input.text(),
-            self.reviewer_input.text(),
+            self.assignee_combo.currentText(),
+            self.reviewer_combo.currentText(),
             self.source_branch_combo.currentText(),
-            self.mr_target_branch_combo.currentText(),
             self.mr_title_input.text(),
             self.mr_description_input.toPlainText(),
         )
