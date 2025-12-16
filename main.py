@@ -5,7 +5,7 @@ from PyQt5.QtWidgets import (
     QCheckBox,
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QLineEdit, 
     QPushButton, QFileDialog, QLabel, QTextEdit, QComboBox, QFormLayout, QInputDialog,
-    QMessageBox, QListWidget, QAbstractItemView
+    QMessageBox, QListWidget, QAbstractItemView, QCompleter
 )
 from PyQt5.QtCore import Qt
 
@@ -42,6 +42,7 @@ class WorkspaceTab(QWidget):
         # Initial data load
         self.run_refresh_remote_branches()
         self.run_refresh_branches()
+        self.run_refresh_mr_target_branches()
 
     def init_create_branch_tab(self):
         layout = QFormLayout()
@@ -186,6 +187,10 @@ class WorkspaceTab(QWidget):
 
         self.create_mr_tab.setLayout(layout)
 
+        self.enable_combo_search(self.source_branch_combo)
+        self.enable_combo_search(self.mr_target_branch_combo)
+
+
     def run_create_branch(self):
         if self.target_branch_list.count() == 0:
             self.create_branch_output.setText('请至少选择一个目标分支。')
@@ -242,6 +247,15 @@ class WorkspaceTab(QWidget):
         self.mr_output.setText(message)
         # After refreshing, try to update fields again
         self.update_mr_fields()
+
+    def enable_combo_search(self, combo):
+        combo.setEditable(True)
+        combo.setInsertPolicy(QComboBox.NoInsert)
+        completer = QCompleter(combo.model())
+        completer.setCaseSensitivity(Qt.CaseInsensitive)
+        if hasattr(completer, 'setFilterMode'):
+            completer.setFilterMode(Qt.MatchContains)
+        combo.setCompleter(completer)
 
     def update_mr_fields(self):
         source_branch = self.source_branch_combo.currentText()
