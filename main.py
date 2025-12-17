@@ -13,6 +13,10 @@ from PyQt5.QtCore import Qt
 from quick_create_branch import create_branch as create_branch_func, get_remote_branches
 from quick_generate_mr_form import get_local_branches, generate_mr, get_mr_defaults, parse_target_branch_from_source, get_gitlab_usernames
 
+class NoWheelComboBox(QComboBox):
+    def wheelEvent(self, event):
+        event.ignore()   # 或直接 return
+
 def _read_stylesheet():
     try:
         with open('styles.qss', 'r', encoding='utf-8') as f:
@@ -161,15 +165,15 @@ class WorkspaceTab(QWidget):
         self.gitlab_url_input = QLineEdit(get_config_value(gitlab_config, 'gitlab_url'))
         self.token_input = QLineEdit(get_config_value(gitlab_config, 'private_token'))
         self.token_input.setEchoMode(QLineEdit.Password)
-        self.assignee_combo = QComboBox()
-        self.reviewer_combo = QComboBox()
+        self.assignee_combo = NoWheelComboBox()
+        self.reviewer_combo = NoWheelComboBox()
         self.refresh_users_button = QPushButton('刷新用户')
 
 
-        self.source_branch_combo = QComboBox()
+        self.source_branch_combo = NoWheelComboBox()
         self.refresh_branches_button = QPushButton('刷新本地分支')
         
-        self.mr_target_branch_combo = QComboBox()
+        self.mr_target_branch_combo = NoWheelComboBox()
         self.refresh_mr_target_branches_button = QPushButton('刷新远程分支')
 
         self.mr_title_input = QLineEdit()
