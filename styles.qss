@@ -1,0 +1,89 @@
+QWidget { 
+  font-family: "Segoe UI"; 
+  font-size: 12px; 
+  color: #2c3e50; 
+  background: #f7f9fc; 
+}
+QTabWidget::pane { 
+  border: 1px solid #dfe6ee; 
+  border-radius: 8px; 
+  background: #ffffff; 
+}
+QTabBar::tab { 
+  background: #eef2f7; 
+  border: 1px solid #dfe6ee; 
+  padding: 8px 16px; 
+  margin: 2px; 
+  border-top-left-radius: 6px; 
+  border-top-right-radius: 6px; 
+}
+QTabBar::tab:selected { 
+  background: #ffffff; 
+  color: #1f2937; 
+}
+QTabBar::tab:hover { 
+  background: #f5f7fa; 
+}
+QPushButton { 
+  background: #2563eb; 
+  color: #ffffff; 
+  border: none; 
+  border-radius: 6px; 
+  padding: 8px 14px; 
+}
+QPushButton:hover { 
+  background: #1e4fd0; 
+}
+QPushButton:disabled { 
+  background: #9db4f7; 
+  color: #eef2ff; 
+}
+QLineEdit, QComboBox, QTextEdit { 
+  background: #ffffff; 
+  border: 1px solid #d1d5db; 
+  border-radius: 6px; 
+  padding: 6px 8px; 
+}
+QLineEdit:focus, QComboBox:focus, QTextEdit:focus { 
+  border: 1px solid #2563eb; 
+}
+QComboBox QAbstractItemView { 
+  background: #ffffff; 
+  border: 1px solid #d1d5db; 
+  selection-background-color: #2563eb; 
+  selection-color: #ffffff; 
+}
+QListWidget { 
+  background: #ffffff; 
+  border: 1px solid #d1d5db; 
+  border-radius: 6px; 
+}
+QTextEdit { 
+  min-height: 100px; 
+}
+QScrollBar:vertical { 
+  background: #f0f3f7; 
+  width: 10px; 
+  margin: 2px; 
+  border-radius: 5px; 
+}
+QScrollBar::handle:vertical { 
+  background: #cbd5e1; 
+  border-radius: 5px; 
+}
+QScrollBar:horizontal { 
+  height: 10px; 
+  background: #f0f3f7; 
+  margin: 2px; 
+  border-radius: 5px; 
+}
+QScrollBar::handle:horizontal { 
+  background: #cbd5e1; 
+  border-radius: 5px; 
+}
+QLabel { 
+  color: #374151; 
+}
+QCheckBox { 
+  spacing: 6px; 
+}

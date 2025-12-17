@@ -13,6 +13,18 @@ from PyQt5.QtCore import Qt
 from quick_create_branch import create_branch as create_branch_func, get_remote_branches
 from quick_generate_mr_form import get_local_branches, generate_mr, get_mr_defaults, parse_target_branch_from_source, get_gitlab_usernames
 
+def _read_stylesheet():
+    try:
+        with open('styles.qss', 'r', encoding='utf-8') as f:
+            return f.read()
+    except Exception:
+        return ''
+
+def _apply_global_styles():
+    ss = _read_stylesheet()
+    if ss:
+        QApplication.instance().setStyleSheet(ss)
+
 class WorkspaceTab(QWidget):
     """A widget for a single workspace, containing its own git tools."""
     def __init__(self, path, config, workspace_config):
@@ -47,6 +59,8 @@ class WorkspaceTab(QWidget):
 
     def init_create_branch_tab(self):
         layout = QFormLayout()
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
         new_branch_prefix = ''
         if self.config.find('new_branch_prefix') is not None:
             new_branch_prefix = self.config.find('new_branch_prefix').text
@@ -133,6 +147,8 @@ class WorkspaceTab(QWidget):
 
     def init_create_mr_tab(self):
         layout = QFormLayout()
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
 
         gitlab_config = self.config.find('gitlab') if self.config is not None else None
         def get_config_value(element, tag, default=''):
@@ -144,6 +160,7 @@ class WorkspaceTab(QWidget):
 
         self.gitlab_url_input = QLineEdit(get_config_value(gitlab_config, 'gitlab_url'))
         self.token_input = QLineEdit(get_config_value(gitlab_config, 'private_token'))
+        self.token_input.setEchoMode(QLineEdit.Password)
         self.assignee_combo = QComboBox()
         self.reviewer_combo = QComboBox()
         self.refresh_users_button = QPushButton('刷新用户')
@@ -382,8 +399,7 @@ class WorkspaceTab(QWidget):
             self.mr_description_input.setPlainText(defaults['description'])
 
     def run_create_mr(self):
-        reply = QMessageBox.question(self, '创建Merge Request',
-                                     f"确认创建Merge Request吗？\n"
+        reply = QMessageBox.question(self, '确认创建Merge Request吗？',
                                      f"源分支: {self.source_branch_combo.currentText()}\n"
                                      f"目标分支: {self.mr_target_branch_combo.currentText()}\n"
                                      f"标题: {self.mr_title_input.text()}\n"
@@ -482,6 +498,7 @@ class App(QWidget):
 
         # Load workspaces from config
         self.load_workspaces()
+        self.apply_styles()
 
     def load_workspaces(self):
         if self.config is not None:
@@ -531,6 +548,9 @@ class App(QWidget):
     def closeEvent(self, event):
         self.save_config()
         event.accept()
+    
+    def apply_styles(self):
+        _apply_global_styles()
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
