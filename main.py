@@ -185,6 +185,8 @@ class WorkspaceTab(QWidget):
         layout.addRow(self.create_mr_button)
         layout.addRow(self.mr_output)
 
+        self.gitlab_url_input.textChanged.connect(self.save_gitlab_basic_config)
+        self.token_input.textChanged.connect(self.save_gitlab_basic_config)
         self.refresh_branches_button.clicked.connect(self.run_refresh_branches)
         self.refresh_mr_target_branches_button.clicked.connect(self.run_refresh_mr_target_branches)
         self.source_branch_combo.currentIndexChanged.connect(self.update_mr_fields)
@@ -325,6 +327,20 @@ class WorkspaceTab(QWidget):
         tree = ET.ElementTree(self.config)
         tree.write('config.xml', encoding='UTF-8', xml_declaration=True)
 
+    def save_gitlab_basic_config(self):
+        gitlab_config = self.config.find('gitlab')
+        if gitlab_config is None:
+            gitlab_config = ET.SubElement(self.config, 'gitlab')
+        def set_child_text(parent, tag, text):
+            child = parent.find(tag)
+            if child is None:
+                child = ET.SubElement(parent, tag)
+            child.text = text
+        set_child_text(gitlab_config, 'gitlab_url', self.gitlab_url_input.text())
+        set_child_text(gitlab_config, 'private_token', self.token_input.text())
+        tree = ET.ElementTree(self.config)
+        tree.write('config.xml', encoding='UTF-8', xml_declaration=True)
+
     def update_mr_fields(self):
         source_branch = self.source_branch_combo.currentText()
         if not source_branch:
@@ -366,6 +382,15 @@ class WorkspaceTab(QWidget):
             self.mr_description_input.setPlainText(defaults['description'])
 
     def run_create_mr(self):
+        reply = QMessageBox.question(self, '创建Merge Request',
+                                     f"确认创建Merge Request吗？\n"
+                                     f"源分支: {self.source_branch_combo.currentText()}\n"
+                                     f"目标分支: {self.mr_target_branch_combo.currentText()}\n"
+                                     f"标题: {self.mr_title_input.text()}\n"
+                                     f"描述: {self.mr_description_input.toPlainText()}",
+                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply == QMessageBox.No:
+            return
         self.mr_output.setText('处理中...')
         QApplication.processEvents()
 

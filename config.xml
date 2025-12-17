@@ -4,8 +4,8 @@
     <gitlab>
         <gitlab_url>http://pd-gitlab.toppanecquaria.com:10080</gitlab_url>
         <private_token>glpat-1JeC8uvfQ9MoWsdzxyDy</private_token>
-        <assignee>yuhan</assignee>
-        <reviewer>lixiang</reviewer>
+        <assignee>ZhangRongRong</assignee>
+        <reviewer>mengying</reviewer>
         <title_template>{commit_message}</title_template>
         <description_template>## Description of Changes
 
