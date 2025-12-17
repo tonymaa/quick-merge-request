@@ -403,7 +403,7 @@ class WorkspaceTab(QWidget):
                                      f"源分支: {self.source_branch_combo.currentText()}\n"
                                      f"目标分支: {self.mr_target_branch_combo.currentText()}\n"
                                      f"标题: {self.mr_title_input.text()}\n"
-                                     f"描述: {self.mr_description_input.toPlainText()}",
+                                     f"描述: \n{self.mr_description_input.toPlainText()}",
                                      QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply == QMessageBox.No:
             return
