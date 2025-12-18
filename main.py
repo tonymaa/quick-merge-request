@@ -328,6 +328,33 @@ class WorkspaceTab(QWidget):
         except Exception:
             pass
 
+    def get_new_branch_history(self):
+        try:
+            with shelve.open('cache.db') as db:
+                return db.get('new_branch_history', [])
+        except Exception:
+            return []
+
+    def sort_source_branches_by_history(self, branches):
+        hist = self.get_new_branch_history()
+        if not hist:
+            return branches
+        index_map = {h: i for i, h in enumerate(hist)}
+        preferred = []
+        others = []
+        for b in branches:
+            rank = None
+            for h in hist:
+                if b.startswith(h):
+                    rank = index_map[h]
+                    break
+            if rank is not None:
+                preferred.append((rank, b))
+            else:
+                others.append(b)
+        preferred.sort(key=lambda x: x[0])
+        ordered = [b for _, b in preferred] + others
+        return ordered
     def run_clear_new_branch_history(self):
         try:
             with shelve.open('cache.db', writeback=True) as db:
@@ -346,7 +373,8 @@ class WorkspaceTab(QWidget):
         QApplication.processEvents()
 
         valid_branches, message = get_local_branches(self.path)
-        self.source_branch_combo.addItems(valid_branches)
+        ordered = self.sort_source_branches_by_history(valid_branches)
+        self.source_branch_combo.addItems(ordered)
         self.mr_output.setText(message)
         if valid_branches:
             self.update_mr_fields()

@@ -27,4 +27,4 @@ TG-{tg_number_from_title}
 - [x] No conflict with target branch</description_template>
     </gitlab>
 
-<workspaces><workspace name="tecq-lowcode-editor" path="E:/lowcode/fe/tecq-lowcode-editor"><target_branch>SZ_dev</target_branch></workspace><workspace name="tecq-lowcode-console-ice3" path="E:/lowcode/fe/tecq-lowcode-console-ice3"><target_branch>SZ_dev</target_branch></workspace></workspaces></config>
+<workspaces><workspace name="tecq-lowcode-editor" path="E:/lowcode/fe/tecq-lowcode-editor"><target_branch>SZ_dev</target_branch><target_branch>qa/r5-s1_5.1.1</target_branch></workspace><workspace name="tecq-lowcode-console-ice3" path="E:/lowcode/fe/tecq-lowcode-console-ice3"><target_branch>SZ_dev</target_branch></workspace></workspaces></config>
