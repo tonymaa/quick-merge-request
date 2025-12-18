@@ -26,8 +26,13 @@ def get_mr_defaults(project_path, source_branch, title_template, description_tem
     last_commit_message = stdout.strip()
 
     title = title_template.format(commit_message=last_commit_message)
+    match_tg_number = re.search(r'tg-(\d+)', title, re.IGNORECASE)
+    tg_number_from_title = ''
+    if match_tg_number:
+        tg_number_from_title = match_tg_number.group(1)
+
     # The description from config parser might have \n as literal strings, so replace them.
-    description = description_template.replace('\n', '\n').format(commit_message=last_commit_message)
+    description = description_template.replace('\n', '\n').format(commit_message=last_commit_message, tg_number_from_title=tg_number_from_title)
     return {'title': title, 'description': description}, None
 
 def parse_target_branch_from_source(source_branch):
