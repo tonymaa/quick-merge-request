@@ -1,6 +1,7 @@
 import sys
 import os
 import xml.etree.ElementTree as ET
+import shelve
 from PyQt5.QtWidgets import (
     QCheckBox,
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QLineEdit, 
@@ -68,8 +69,15 @@ class WorkspaceTab(QWidget):
         new_branch_prefix = ''
         if self.config.find('new_branch_prefix') is not None:
             new_branch_prefix = self.config.find('new_branch_prefix').text
-        self.new_branch_input = QLineEdit(new_branch_prefix)
-        layout.addRow('新分支名:', self.new_branch_input)
+        self.new_branch_combo = QComboBox()
+        self.new_branch_combo.setEditable(True)
+        self.new_branch_combo.setEditText(new_branch_prefix)
+        self.clear_new_branch_history_button = QPushButton('清空历史')
+        new_branch_row = QHBoxLayout()
+        new_branch_row.addWidget(self.new_branch_combo)
+        new_branch_row.addWidget(self.clear_new_branch_history_button)
+        layout.addRow('新分支名:', new_branch_row)
+        self.load_new_branch_history()
 
         # Search box for available branches
         self.branch_search_input = QLineEdit()
@@ -126,6 +134,7 @@ class WorkspaceTab(QWidget):
         self.refresh_remote_branches_button.clicked.connect(self.run_refresh_remote_branches)
         self.add_to_target_button.clicked.connect(self.move_to_target)
         self.remove_from_target_button.clicked.connect(self.remove_from_target)
+        self.clear_new_branch_history_button.clicked.connect(self.run_clear_new_branch_history)
 
         self.create_branch_tab.setLayout(layout)
 
@@ -231,17 +240,27 @@ class WorkspaceTab(QWidget):
             return
             
         target_branches = [self.target_branch_list.item(i).text() for i in range(self.target_branch_list.count())]
-        new_branch = self.new_branch_input.text()
+        new_branch = self.new_branch_combo.currentText()
 
         self.create_branch_output.setText('处理中...')
         QApplication.processEvents()
         
         all_output = []
+        any_success = False
         for target_branch in target_branches:
             output = create_branch_func(self.path, target_branch, new_branch)
             all_output.append(f'--- 对于目标分支: {target_branch} ---\n{output}')
+            if 'Branch created successfully!' in output:
+                any_success = True
         
-        self.create_branch_output.setText('\n\n'.join(all_output))
+        self.create_branch_output.setText('\\n\\n'.join(all_output))
+        if any_success and new_branch:
+            self.save_new_branch_to_history(new_branch)
+            # 保持默认值为 new_branch_prefix
+            prefix = ''
+            if self.config is not None and self.config.find('new_branch_prefix') is not None:
+                prefix = self.config.find('new_branch_prefix').text or ''
+            self.new_branch_combo.setCurrentText(prefix)
 
     def run_refresh_remote_branches(self):
         self.available_branches_list.clear()
@@ -259,6 +278,67 @@ class WorkspaceTab(QWidget):
         self.available_branches_list.addItems(available_branches)
         
         self.create_branch_output.setText(message)
+
+    def reload_new_branch_history(self):
+        new_branch_text = self.new_branch_combo.currentText()
+        try:
+            with shelve.open('cache.db') as db:
+                history = db.get('new_branch_history', [])
+            self.new_branch_combo.clear()
+            for item in history:
+                if self.new_branch_combo.findText(item, Qt.MatchFixedString) < 0:
+                    self.new_branch_combo.addItem(item)
+        except Exception:
+            pass
+        if new_branch_text == '':
+            if self.config is not None and self.config.find('new_branch_prefix') is not None:
+                new_branch_text = self.config.find('new_branch_prefix').text or ''
+        self.new_branch_combo.setEditText(new_branch_text)
+    def load_new_branch_history(self):
+        try:
+            with shelve.open('cache.db') as db:
+                history = db.get('new_branch_history', [])
+            for item in history:
+                if self.new_branch_combo.findText(item, Qt.MatchFixedString) < 0:
+                    self.new_branch_combo.addItem(item)
+        except Exception:
+            pass
+        prefix = ''
+        if self.config is not None and self.config.find('new_branch_prefix') is not None:
+            prefix = self.config.find('new_branch_prefix').text or ''
+        self.new_branch_combo.setEditText(prefix)
+
+    def save_new_branch_to_history(self, name):
+        try:
+            with shelve.open('cache.db', writeback=True) as db:
+                history = db.get('new_branch_history', [])
+                if name in history:
+                    history.remove(name)
+                history.insert(0, name)
+                if len(history) > 20:
+                    history = history[:20]
+                db['new_branch_history'] = history
+            if self.new_branch_combo.findText(name, Qt.MatchFixedString) < 0:
+                self.new_branch_combo.addItem(name)
+            # 强制保持默认的编辑文本
+            prefix = ''
+            if self.config is not None and self.config.find('new_branch_prefix') is not None:
+                prefix = self.config.find('new_branch_prefix').text or ''
+            self.new_branch_combo.setCurrentText(prefix)
+        except Exception:
+            pass
+
+    def run_clear_new_branch_history(self):
+        try:
+            with shelve.open('cache.db', writeback=True) as db:
+                db['new_branch_history'] = []
+            self.new_branch_combo.clear()
+            prefix = ''
+            if self.config is not None and self.config.find('new_branch_prefix') is not None:
+                prefix = self.config.find('new_branch_prefix').text or ''
+            self.new_branch_combo.setEditText(prefix)
+        except Exception:
+            pass
 
     def run_refresh_branches(self):
         self.source_branch_combo.clear()
@@ -493,6 +573,7 @@ class App(QWidget):
         self.workspace_tabs = QTabWidget()
         self.workspace_tabs.setTabsClosable(True)
         self.workspace_tabs.tabCloseRequested.connect(self.remove_workspace_tab)
+        self.workspace_tabs.currentChanged.connect(self.on_workspace_tab_changed)
         main_layout.addWidget(self.workspace_tabs)
 
         self.setLayout(main_layout)
@@ -552,6 +633,11 @@ class App(QWidget):
     def closeEvent(self, event):
         self.save_config()
         event.accept()
+    
+    def on_workspace_tab_changed(self, index):
+        w = self.workspace_tabs.widget(index)
+        if isinstance(w, WorkspaceTab):
+            w.reload_new_branch_history()
     
     def apply_styles(self):
         _apply_global_styles()
