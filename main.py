@@ -356,6 +356,11 @@ class WorkspaceTab(QWidget):
         ordered = [b for _, b in preferred] + others
         return ordered
     def run_clear_new_branch_history(self):
+        reply = QMessageBox.question(self, '清空历史记录',
+                                "确认清空新分支历史记录吗？",
+                                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply == QMessageBox.No:
+            return
         try:
             with shelve.open('cache.db', writeback=True) as db:
                 db['new_branch_history'] = []
