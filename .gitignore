@@ -1,9 +1,36 @@
-.idea/.gitignore
-.idea/gitlab-quickmr.xml
-.idea/google-java-format.xml
-.idea/misc.xml
-.idea/modules.xml
-.idea/quick_merge_request.iml
-.idea/vcs.xml
-__pycache__/quick_create_branch.cpython-310.pyc
-__pycache__/quick_generate_mr_form.cpython-310.pyc
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.env
+.venv
+venv/
+
+# ===== IDE =====
+.idea/
+.vscode/
+*.iml
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+
+# ===== Project local files =====
+# cache database
+cache.db
+cache.db.*
+*.db
+*.sqlite
+*.sqlite3
+
+# local config (do not commit)
+config.xml
+
+# ===== Logs =====
+*.log
+
+# ===== Build / dist =====
+build/
+dist/
+*.egg-info/
