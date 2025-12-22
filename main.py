@@ -12,7 +12,7 @@ from PyQt5.QtCore import Qt
 
 # Import refactored functions
 from quick_create_branch import create_branch as create_branch_func, get_remote_branches
-from quick_generate_mr_form import get_local_branches, generate_mr, get_mr_defaults, parse_target_branch_from_source, get_gitlab_usernames
+from quick_generate_mr_form import get_local_branches, get_all_local_branches, generate_mr, get_mr_defaults, parse_target_branch_from_source, get_gitlab_usernames
 
 class NoWheelComboBox(QComboBox):
     def wheelEvent(self, event):
@@ -201,7 +201,9 @@ class WorkspaceTab(QWidget):
 
         source_branch_layout = QHBoxLayout()
         source_branch_layout.addWidget(self.source_branch_combo)
+        self.show_all_branches_checkbox = QCheckBox('显示所有分支')
         source_branch_layout.addWidget(self.refresh_branches_button)
+        source_branch_layout.addWidget(self.show_all_branches_checkbox)
         layout.addRow('源分支:', source_branch_layout)
 
         target_branch_layout = QHBoxLayout()
@@ -224,6 +226,7 @@ class WorkspaceTab(QWidget):
         self.refresh_users_button.clicked.connect(self.run_refresh_users)
         self.assignee_combo.currentTextChanged.connect(self.save_gitlab_user_selection)
         self.reviewer_combo.currentTextChanged.connect(self.save_gitlab_user_selection)
+        self.show_all_branches_checkbox.stateChanged.connect(self.run_refresh_branches)
 
         self.create_mr_tab.setLayout(layout)
 
@@ -377,9 +380,13 @@ class WorkspaceTab(QWidget):
         self.mr_output.setText('正在加载本地分支...') 
         QApplication.processEvents()
 
-        valid_branches, message = get_local_branches(self.path)
-        ordered = self.sort_source_branches_by_history(valid_branches)
-        self.source_branch_combo.addItems(ordered)
+        if hasattr(self, 'show_all_branches_checkbox') and self.show_all_branches_checkbox.isChecked():
+            valid_branches, message = get_all_local_branches(self.path)
+            self.source_branch_combo.addItems(valid_branches)
+        else:
+            valid_branches, message = get_local_branches(self.path)
+            ordered = self.sort_source_branches_by_history(valid_branches)
+            self.source_branch_combo.addItems(ordered)
         self.mr_output.setText(message)
         if valid_branches:
             self.update_mr_fields()

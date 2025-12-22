@@ -18,6 +18,14 @@ def get_local_branches(directory):
     valid_branches = [b.strip().replace('* ', '') for b in branches if '__from__' in b]
     return valid_branches, "Branches loaded."
 
+def get_all_local_branches(directory):
+    stdout, stderr = run_command(['git', 'branch'], directory)
+    if stderr:
+        return [], f"Error loading branches:\n{stderr}"
+    branches = stdout.strip().split('\n')
+    all_branches = [b.strip().replace('* ', '') for b in branches if b.strip()]
+    return all_branches, "All branches loaded."
+
 def get_mr_defaults(project_path, source_branch, title_template, description_template):
     # Get last commit message
     stdout, stderr = run_command(['git', 'log', source_branch, '-1', '--pretty=%B'], project_path)
