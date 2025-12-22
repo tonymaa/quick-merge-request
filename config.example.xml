@@ -20,7 +20,7 @@
 - [ ] Tests
 
 ## Taiga Number and link
-TG-{tg_number_from_title}
+[TG-{tg_number_from_title}](https://taiga.ecquaria.org/project/tecq-agp/search?text={tg_number_from_title})
 
 ## Checklist before review
 - [x] I have performed a self-review of the code
