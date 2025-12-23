@@ -566,7 +566,7 @@ class WorkspaceTab(QWidget):
         form_layout.addRow('选择源分支:', branch_layout)
         
         # 操作按钮
-        self.cherry_pick_button = QPushButton('执行Cherry-pick')
+        self.cherry_pick_button = QPushButton('刷新差异')
         form_layout.addRow(self.cherry_pick_button)
         
         layout.addLayout(form_layout)
