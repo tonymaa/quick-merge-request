@@ -39,6 +39,7 @@ class WorkspaceTab(QWidget):
         self.config = config
         self.workspace_config = workspace_config
         self.workspace_name = workspace_name or ''
+        self.initialized = False
         self.initUI()
 
     def initUI(self):
@@ -60,12 +61,7 @@ class WorkspaceTab(QWidget):
         layout = QVBoxLayout()
         layout.addWidget(self.tools_tabs)
         self.setLayout(layout)
-        
-        # Initial data load
-        self.run_refresh_remote_branches()
-        self.run_refresh_branches()
-        self.run_refresh_mr_target_branches()
-        self.run_refresh_users()
+        # Defer initial data load until tab activation
 
     def init_create_branch_tab(self):
         layout = QFormLayout()
@@ -238,6 +234,14 @@ class WorkspaceTab(QWidget):
         self.enable_combo_search(self.assignee_combo)
         self.enable_combo_search(self.reviewer_combo)
         self.init_users_selection()
+    
+    def ensure_initialized(self):
+        if not self.initialized:
+            self.run_refresh_remote_branches()
+            self.run_refresh_branches()
+            self.run_refresh_mr_target_branches()
+            self.run_refresh_users()
+            self.initialized = True
 
     def get_default_new_branch_prefix(self, tab_name=None):
         node = self.config.find('new_branch_prefix') if self.config is not None else None
@@ -769,6 +773,16 @@ class App(QWidget):
         self.workspace_tabs.setTabsClosable(True)
         self.workspace_tabs.tabCloseRequested.connect(self.remove_workspace_tab)
         self.workspace_tabs.currentChanged.connect(self.on_workspace_tab_changed)
+        self.welcome_tab = QWidget()
+        welcome_layout = QVBoxLayout()
+        welcome_label = QLabel('请选择一个工作区标签页以开始')
+        welcome_label.setAlignment(Qt.AlignCenter)
+        welcome_layout.addWidget(welcome_label)
+        self.welcome_tab.setLayout(welcome_layout)
+        self.workspace_tabs.addTab(self.welcome_tab, '')
+        welcome_index = self.workspace_tabs.indexOf(self.welcome_tab)
+        if welcome_index != -1:
+            self.workspace_tabs.tabBar().setTabVisible(welcome_index, False)
         # 启用上下文菜单
         self.workspace_tabs.setContextMenuPolicy(Qt.CustomContextMenu)
         self.workspace_tabs.customContextMenuRequested.connect(self.show_workspace_context_menu)
@@ -792,7 +806,7 @@ class App(QWidget):
                     name = ws.get('name')
                     path = ws.get('path')
                     if name and path and os.path.isdir(path):
-                        self.add_workspace_tab(name, path, ws)
+                        self.add_workspace_tab(name, path, ws, make_current=False)
                     else:
                         removed_workspaces.append(name or path or '未命名工作区')
                         workspaces_node.remove(ws)
@@ -810,10 +824,11 @@ class App(QWidget):
                 self.add_workspace_tab(name, path, None)
                 self.save_config() # Save after adding
 
-    def add_workspace_tab(self, name, path, workspace_config):
+    def add_workspace_tab(self, name, path, workspace_config, make_current=True):
         tab = WorkspaceTab(path, self.config, workspace_config, name)
         self.workspace_tabs.addTab(tab, name)
-        self.workspace_tabs.setCurrentWidget(tab)
+        if make_current:
+            self.workspace_tabs.setCurrentWidget(tab)
 
     def remove_workspace_tab(self, index):
         if index < 0:
@@ -836,6 +851,12 @@ class App(QWidget):
         w = self.workspace_tabs.widget(index)
         if isinstance(w, WorkspaceTab):
             w.reload_new_branch_history()
+            w.ensure_initialized()
+            # Remove welcome tab once a workspace is selected
+            for i in range(self.workspace_tabs.count()):
+                if self.workspace_tabs.widget(i) is self.welcome_tab:
+                    self.workspace_tabs.removeTab(i)
+                    break
     
     def show_workspace_context_menu(self, position):
         # 获取被右键点击的tab索引
