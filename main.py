@@ -32,11 +32,12 @@ def _apply_global_styles():
 
 class WorkspaceTab(QWidget):
     """A widget for a single workspace, containing its own git tools."""
-    def __init__(self, path, config, workspace_config):
+    def __init__(self, path, config, workspace_config, workspace_name=None):
         super().__init__()
         self.path = path
         self.config = config
         self.workspace_config = workspace_config
+        self.workspace_name = workspace_name or ''
         self.initUI()
 
     def initUI(self):
@@ -66,9 +67,7 @@ class WorkspaceTab(QWidget):
         layout = QFormLayout()
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
-        new_branch_prefix = ''
-        if self.config.find('new_branch_prefix') is not None:
-            new_branch_prefix = self.config.find('new_branch_prefix').text
+        new_branch_prefix = self.get_default_new_branch_prefix()
         self.new_branch_combo = QComboBox()
         self.new_branch_combo.setEditable(True)
         self.new_branch_combo.setEditText(new_branch_prefix)
@@ -236,6 +235,16 @@ class WorkspaceTab(QWidget):
         self.enable_combo_search(self.reviewer_combo)
         self.init_users_selection()
 
+    def get_default_new_branch_prefix(self, tab_name=None):
+        node = self.config.find('new_branch_prefix') if self.config is not None else None
+        text = ''
+        if node is not None and node.text:
+            text = node.text
+        tn = tab_name if tab_name is not None else self.workspace_name
+        try:
+            return text.format(tab_name=tn or '')
+        except Exception:
+            return text
 
     def run_create_branch(self):
         if self.target_branch_list.count() == 0:
@@ -260,10 +269,8 @@ class WorkspaceTab(QWidget):
         if any_success and new_branch:
             self.save_new_branch_to_history(new_branch)
             # 保持默认值为 new_branch_prefix
-            prefix = ''
-            if self.config is not None and self.config.find('new_branch_prefix') is not None:
-                prefix = self.config.find('new_branch_prefix').text or ''
-            self.new_branch_combo.setCurrentText(prefix)
+            prefix = self.get_default_new_branch_prefix()
+            self.new_branch_combo.setEditText(prefix)
 
     def run_refresh_remote_branches(self):
         self.available_branches_list.clear()
@@ -294,8 +301,7 @@ class WorkspaceTab(QWidget):
         except Exception:
             pass
         if new_branch_text == '':
-            if self.config is not None and self.config.find('new_branch_prefix') is not None:
-                new_branch_text = self.config.find('new_branch_prefix').text or ''
+            new_branch_text = self.get_default_new_branch_prefix()
         self.new_branch_combo.setEditText(new_branch_text)
     def load_new_branch_history(self):
         try:
@@ -306,9 +312,7 @@ class WorkspaceTab(QWidget):
                     self.new_branch_combo.addItem(item)
         except Exception:
             pass
-        prefix = ''
-        if self.config is not None and self.config.find('new_branch_prefix') is not None:
-            prefix = self.config.find('new_branch_prefix').text or ''
+        prefix = self.get_default_new_branch_prefix()
         self.new_branch_combo.setEditText(prefix)
 
     def save_new_branch_to_history(self, name):
@@ -324,10 +328,8 @@ class WorkspaceTab(QWidget):
             if self.new_branch_combo.findText(name, Qt.MatchFixedString) < 0:
                 self.new_branch_combo.addItem(name)
             # 强制保持默认的编辑文本
-            prefix = ''
-            if self.config is not None and self.config.find('new_branch_prefix') is not None:
-                prefix = self.config.find('new_branch_prefix').text or ''
-            self.new_branch_combo.setCurrentText(prefix)
+            prefix = self.get_default_new_branch_prefix()
+            self.new_branch_combo.setEditText(prefix)
         except Exception:
             pass
 
@@ -368,9 +370,7 @@ class WorkspaceTab(QWidget):
             with shelve.open('cache.db', writeback=True) as db:
                 db['new_branch_history'] = []
             self.new_branch_combo.clear()
-            prefix = ''
-            if self.config is not None and self.config.find('new_branch_prefix') is not None:
-                prefix = self.config.find('new_branch_prefix').text or ''
+            prefix = self.get_default_new_branch_prefix()
             self.new_branch_combo.setEditText(prefix)
         except Exception:
             pass
@@ -653,7 +653,7 @@ class App(QWidget):
                 self.save_config() # Save after adding
 
     def add_workspace_tab(self, name, path, workspace_config):
-        tab = WorkspaceTab(path, self.config, workspace_config)
+        tab = WorkspaceTab(path, self.config, workspace_config, name)
         self.workspace_tabs.addTab(tab, name)
         self.workspace_tabs.setCurrentWidget(tab)
 
