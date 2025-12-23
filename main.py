@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import (
     QCheckBox,
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QLineEdit, 
     QPushButton, QFileDialog, QLabel, QTextEdit, QComboBox, QFormLayout, QInputDialog,
-    QMessageBox, QListWidget, QAbstractItemView, QCompleter
+    QMessageBox, QListWidget, QAbstractItemView, QCompleter, QMenu
 )
 from PyQt5.QtCore import Qt
 
@@ -49,7 +49,7 @@ class WorkspaceTab(QWidget):
         self.cherry_pick_tab = QWidget()
 
         self.tools_tabs.addTab(self.create_branch_tab, '创建分支')
-        self.tools_tabs.addTab(self.cherry_pick_tab, '同步提交')
+        self.tools_tabs.addTab(self.cherry_pick_tab, '快速Cherry-pick')
         self.tools_tabs.addTab(self.create_mr_tab, '创建合并请求')
 
         # Initialize the content of each tool tab
@@ -769,6 +769,9 @@ class App(QWidget):
         self.workspace_tabs.setTabsClosable(True)
         self.workspace_tabs.tabCloseRequested.connect(self.remove_workspace_tab)
         self.workspace_tabs.currentChanged.connect(self.on_workspace_tab_changed)
+        # 启用上下文菜单
+        self.workspace_tabs.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.workspace_tabs.customContextMenuRequested.connect(self.show_workspace_context_menu)
         main_layout.addWidget(self.workspace_tabs)
 
         self.setLayout(main_layout)
@@ -833,6 +836,52 @@ class App(QWidget):
         w = self.workspace_tabs.widget(index)
         if isinstance(w, WorkspaceTab):
             w.reload_new_branch_history()
+    
+    def show_workspace_context_menu(self, position):
+        # 获取被右键点击的tab索引
+        tab_index = self.workspace_tabs.tabBar().tabAt(position)
+        if tab_index != -1:
+            # 创建上下文菜单
+            context_menu = QMenu(self)
+            
+            # 添加重命名选项
+            rename_action = context_menu.addAction('重命名')
+            rename_action.triggered.connect(lambda: self.rename_workspace_tab(tab_index))
+            
+            # 在鼠标位置显示菜单
+            context_menu.exec_(self.workspace_tabs.mapToGlobal(position))
+    
+    def rename_workspace_tab(self, index):
+        # 获取当前tab的名称
+        current_name = self.workspace_tabs.tabText(index)
+        tab_widget = self.workspace_tabs.widget(index)
+        
+        if isinstance(tab_widget, WorkspaceTab):
+            tab_path = tab_widget.path
+        else:
+            tab_path = "Unknown Path"
+        
+        # 弹出对话框让用户输入新名称
+        new_name, ok = QInputDialog.getText(self, '重命名工作区', 
+                                          '输入新的工作区名称:', 
+                                          text=current_name)
+        
+        if ok and new_name:
+            # 更新tab名称
+            self.workspace_tabs.setTabText(index, new_name)
+            
+            # 更新配置文件中的工作区名称
+            if self.config is not None:
+                workspaces_node = self.config.find('workspaces')
+                if workspaces_node is not None:
+                    # 查找对应路径的工作区节点并更新名称
+                    for ws in workspaces_node.findall('workspace'):
+                        if ws.get('path') == tab_path:
+                            ws.set('name', new_name)
+                            break
+            
+            # 保存配置
+            self.save_config()
     
     def apply_styles(self):
         _apply_global_styles()
