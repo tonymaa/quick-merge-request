@@ -104,3 +104,40 @@ def get_gitlab_usernames(gitlab_url, token):
         return usernames, None
     except Exception as e:
         return [], f'Failed to load users: {e}'
+
+
+def get_branch_diff(directory, feature_branch):
+    """获取feature分支和其对应的source分支之间的差异"""
+    # 检查分支是否包含__from__模式
+    if '__from__' not in feature_branch:
+        return [], f'分支 {feature_branch} 不包含 __from__ 模式，无法比较差异'
+    
+    # 从feature分支名中提取source分支名
+    try:
+        parts = feature_branch.split('__from__')
+        feature_part = parts[0]
+        source_part = parts[1].replace('@', '/')  # 将@替换回/
+        
+        # 获取feature分支的提交列表
+        feature_cmd = ['git', 'log', '--oneline', f'origin/{source_part}..{feature_branch}']
+        feature_stdout, feature_stderr = run_command(feature_cmd, directory)
+        
+        if feature_stderr:
+            return [], f'获取 {feature_branch} 分支差异失败: {feature_stderr}'
+        
+        # 解析提交列表
+        commits = []
+        if feature_stdout.strip():
+            for line in feature_stdout.strip().split('\n'):
+                if line.strip():
+                    commit_hash = line.split()[0]
+                    commit_msg = ' '.join(line.split()[1:]) if len(line.split()) > 1 else ''
+                    commits.append({
+                        'hash': commit_hash,
+                        'message': commit_msg,
+                        'branch': feature_branch
+                    })
+        
+        return commits, None
+    except Exception as e:
+        return [], f'解析分支名失败: {str(e)}'
