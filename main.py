@@ -49,8 +49,8 @@ class WorkspaceTab(QWidget):
         self.cherry_pick_tab = QWidget()
 
         self.tools_tabs.addTab(self.create_branch_tab, '创建分支')
+        self.tools_tabs.addTab(self.cherry_pick_tab, '同步提交')
         self.tools_tabs.addTab(self.create_mr_tab, '创建合并请求')
-        self.tools_tabs.addTab(self.cherry_pick_tab, '快速Cherry-pick')
 
         # Initialize the content of each tool tab
         self.init_create_branch_tab()
@@ -633,12 +633,6 @@ class WorkspaceTab(QWidget):
     def run_cherry_pick(self):
         selected_branch = self.cherry_pick_branch_combo.currentText()
         if not selected_branch:
-            # 清空现有差异显示
-            for i in reversed(range(self.cherry_pick_diff_scroll_area.count())):
-                self.cherry_pick_diff_scroll_area.itemAt(i).widget().setParent(None)
-            
-            # 显示所有分支的差异
-            self.show_all_branch_diffs()
             return
         
         # 清空现有差异显示
@@ -670,7 +664,7 @@ class WorkspaceTab(QWidget):
             commits, error = get_branch_diff(self.path, branch)
             
             # 创建分支标题
-            branch_title = QLabel(f'<b>分支 "{branch}" 的差异:</b>')
+            branch_title = QLabel(f'<b>分支 "{branch}" 的新提交:</b>')
             branch_title.setStyleSheet('color: #2c3e50; font-size: 14px; margin-top: 10px; margin-bottom: 5px;')
             self.cherry_pick_diff_scroll_area.addWidget(branch_title)
             
@@ -695,58 +689,6 @@ class WorkspaceTab(QWidget):
                 no_diff_label.setStyleSheet('color: #7f8c8d;')
                 self.cherry_pick_diff_scroll_area.addWidget(no_diff_label)
 
-    def show_all_branch_diffs(self):
-        # 清空现有差异显示
-        for i in reversed(range(self.cherry_pick_diff_scroll_area.count())):
-            self.cherry_pick_diff_scroll_area.itemAt(i).widget().setParent(None)
-        
-        # 获取所有本地分支
-        branches, message = get_local_branches(self.path)
-        if not branches:
-            branches, message = get_all_local_branches(self.path)
-        
-        # 查找所有包含__from__的分支
-        feature_branches = []
-        for branch in branches:
-            if '__from__' in branch:
-                feature_branches.append(branch)
-        
-        if not feature_branches:
-            no_branches_label = QLabel('没有找到包含__from__模式的分支。')
-            no_branches_label.setStyleSheet('color: #7f8c8d;')
-            self.cherry_pick_diff_scroll_area.addWidget(no_branches_label)
-            return
-        
-        # 为每个分支显示差异
-        for branch in feature_branches:
-            # 获取分支差异
-            commits, error = get_branch_diff(self.path, branch)
-            
-            # 创建分支标题
-            branch_title = QLabel(f'<b>分支 "{branch}" 的差异:</b>')
-            branch_title.setStyleSheet('color: #2c3e50; font-size: 14px; margin-top: 10px; margin-bottom: 5px;')
-            self.cherry_pick_diff_scroll_area.addWidget(branch_title)
-            
-            if error:
-                error_label = QLabel(f'获取分支差异失败: {error}')
-                error_label.setStyleSheet('color: #e74c3c;')
-                self.cherry_pick_diff_scroll_area.addWidget(error_label)
-                continue
-            
-            # 显示差异
-            if commits:
-                diff_text = QTextEdit()
-                diff_text.setReadOnly(True)
-                diff_content = ''
-                for commit in commits:
-                    diff_content += f'{commit["hash"]} {commit["message"]}\n'
-                diff_text.setPlainText(diff_content)
-                diff_text.setMaximumHeight(100)
-                self.cherry_pick_diff_scroll_area.addWidget(diff_text)
-            else:
-                no_diff_label = QLabel('此分支与源分支之间没有差异或无法获取差异信息。')
-                no_diff_label.setStyleSheet('color: #7f8c8d;')
-                self.cherry_pick_diff_scroll_area.addWidget(no_diff_label)
 
     def get_default_new_branch_prefix(self, tab_name=None):
         node = self.config.find('new_branch_prefix') if self.config is not None else None
