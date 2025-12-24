@@ -1,170 +1,103 @@
 # 🧠 Quick Merge Request
 
-快速创建 GitLab/GitHub 合并请求（Merge Request / Pull Request）的命令行 + 可视化交互工具。
-
-A command-line + interactive tool to quickly create GitLab/GitHub Merge Requests (MR / PR) without manually visiting the web UI.
+快速创建 GitLab 合并请求（Merge Request）的桌面工具（PyQt5 GUI）。
 
 ---
 
-## 📌 Features | 功能特点
+## 📌 主要特性
 
-* ⭐ 一键快速生成 Merge Request / Pull Request
-* 🛠️ 支持分支创建与 MR 信息交互填写
-* 📋 自动缓存常用信息，减少重复输入
-* 💻 支持 Python 脚本启动 / Windows 批处理启动
+- 创建分支与合并请求的整合界面
+- MR 确认框优化：关键信息简洁展示、详细信息可展开
+- 新分支名历史缓存（`cache.db`），历史可一键清空
+- 源分支下拉支持“显示所有分支”开关；默认按历史前缀优先排序
+- 新分支前缀支持动态模板（支持 `{tab_name}`）
+- 工作区欢迎页与延迟初始化：不自动打开历史工作区，首次选择时加载
+- 快速 Cherry-pick 辅助：按前缀聚合，显示差异摘要
+- 全局样式（QSS）与下拉搜索增强（可模糊匹配）
 
 ---
 
-## 📦 安装 | Installation
-
-1. 克隆仓库 Clone the repo：
-
-```bash
-git clone https://github.com/tonymaa/quick-merge-request.git
-cd quick-merge-request
-```
-
-2. 安装 Python 依赖 Install dependencies:
+## 📦 安装
 
 ```bash
 pip install -r requirements.txt
 ```
 
-如果你不使用全局 Python 环境，建议先创建虚拟环境（如 `venv`）后再安装。
+建议在虚拟环境中安装依赖。
 
 ---
 
-## 🚀 快速开始 | Quick Start
+## 🚀 启动
 
-### 🔹 启动主程序
-
-```bash
-python main.py
-```
-
-程序将提示你输入：
-
-* 当前分支或新分支名称
-* Merge Request / Pull Request 标题与描述
-
-然后自动生成并打开合并请求（或输出生成链接）。
-
-### 🔹 Windows 一键启动
-
-双击项目根目录下的 `quick_MR.bat` 也可以快速启动。
+- Python 启动：`python main.py`
+- Windows 一键：双击 `quick_MR.bat`
 
 ---
 
-## 📄 配置文件 | Configuration
+## � 项目结构（关键模块）
 
-项目会在首次运行时生成本地配置文件；
-
-* `config.xml`: 本地配置（如默认分支、用户名等），请不要被提交到 Git
-* 缓存文件 `cache.db*`: 用于记录历史输入
-
-建议复制示例配置并自行修改：
-
-```bash
-cp config.example.xml config.xml
-```
-
-将 `config.xml` 添加到 `.gitignore` 中已避免泄露配置。
+- `app/ui/main_window.py`：主窗口 `App`（工作区标签、配置读写、样式应用）
+- `app/ui/workspace_tab.py`：工作区页签 `WorkspaceTab`（创建分支、创建 MR、Cherry-pick）
+- `app/widgets.py`：通用控件与交互（如 `NoWheelComboBox`、下拉搜索增强）
+- `app/styles.py`：全局样式加载与应用（读取 `styles.qss`）
+- `quick_create_branch.py`：分支创建与远程分支获取
+- `quick_generate_mr_form.py`：本地分支获取、默认值生成、MR 创建、用户获取
+- `config.xml`：本地配置（工作区与 GitLab 配置）
+- `cache.db`：本地缓存（新分支名历史）
 
 ---
 
-## 📁 推荐 .gitignore 配置
+## ⚙️ 配置说明（`config.xml`）
 
-以下内容建议加入你的 `.gitignore`：
+- `gitlab`：
+  - `gitlab_url`：GitLab 地址
+  - `private_token`：私有 Token
+  - `assignee`：默认指派人
+  - `reviewer`：默认审查者
+  - `title_template`：标题模板，示例：`Draft: {commit_message}`
+  - `description_template`：描述模板，示例：`{commit_message}`
+- `new_branch_prefix`：新分支前缀模板，支持 `{tab_name}` 占位符
+- `workspaces/workspace`：工作区配置
+  - 属性 `name` 工作区名，`path` 本地路径
+  - 嵌套 `target_branch` 用于保存目标分支列表
+
+首次运行会自动创建最小化 `config.xml`。
+
+---
+
+## 🧰 使用要点
+
+- 创建分支成功后，分支名会保存到 `cache.db:new_branch_history`，并保持编辑框默认值为模板前缀
+- 源分支下拉默认按历史前缀排序；勾选“显示所有分支”后显示全部本地分支
+- 工作区标签右键支持重命名；移除无效工作区路径时会给出提示并自动清理配置
+
+---
+
+## �️ 忽略文件建议（`.gitignore`）
 
 ```gitignore
-# Python
 __pycache__/
 *.py[cod]
 .venv/
-
-# OS
 .DS_Store
-
-# local config / cache
 cache.db*
 config.xml
 ```
 
-这样可以忽略本地缓存与用户专用配置。
-
 ---
 
-## 🧠 工作流程 | How It Works
+## 🤝 贡献
 
-本工具通过提示与配置自动执行以下流程：
+欢迎通过 Issues 或 Pull Requests 贡献功能与改进：
 
-1. 输入或选择 Git 分支
-2. 填写合并请求标题与描述
-3. 调用 Git 命令推送分支
-4. 生成并打开对应的 Merge Request / Pull Request 页面链接
-
----
-
-## 📌 注意事项 | Notes
-
-* 请确保本地已经配置好 Git 并能够正常访问远程仓库（SSH 或 HTTP）
-* 仅负责生成请求内容，代码仍需你自行推动审核与合并
-* 配置文件请使用示例并自行修改
-
----
-
-## 🛠 示例用法 | Usage Example
-
-一个典型的使用流程：
-
-1. 新建分支（示例）
-
-```bash
-python quick_create_branch.py feature/add-login
-```
-
-2. 填写 MR 表单
-
-```bash
-python quick_generate_mr_form.py
-```
-
-3. 或直接运行主入口
-
-```bash
-python main.py
-```
-
----
-
-## 💡 如何提交MR / PR（参考）
-
-GitHub 上的 Pull Request / Merge Request 是提交代码变更的关键机制，通过比较两个分支并请求合并，以便团队协作与代码审查。 ([GitHub RSP][1])
-
----
-
-## 🤝 贡献 | Contributing
-
-欢迎通过 Issues 或 Pull Requests 贡献你的改进建议与功能增强！
-
-贡献步骤：
-
-1. Fork 本仓库
-2. 创建新分支 `feat/xxx`
-3. 提交修改并 push
+1. Fork 仓库
+2. 创建分支 `feat/xxx`
+3. 提交并 push
 4. 发起 Pull Request
 
 ---
 
-## 📄 许可 | License
+## 📄 许可
 
-本项目采用 **MIT License**，详见 LICENSE 文件。
-
----
-
-## 📣 联系作者 | Contact
-
-如果你在使用过程中遇到任何问题，欢迎发起 Issue 或联系仓库作者。
-
----
+MIT License（详见 `LICENSE`）。
 
