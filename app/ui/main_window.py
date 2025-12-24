@@ -71,6 +71,7 @@ class App(QWidget):
         welcome_layout = QVBoxLayout()
         welcome_label = QLabel('请选择一个工作区标签页以开始')
         welcome_label.setAlignment(Qt.AlignCenter)
+        welcome_label.setObjectName('welcomeLabel')  # 设置对象名称
         welcome_layout.addWidget(welcome_label)
         self.welcome_tab.setLayout(welcome_layout)
         self.workspace_tabs.addTab(self.welcome_tab, '')
