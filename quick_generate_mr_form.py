@@ -50,7 +50,7 @@ def parse_target_branch_from_source(source_branch):
     except Exception:
         return None
 
-def generate_mr(directory, gitlab_url, token, assignee_user, reviewer_user, source_branch, title, description):
+def generate_mr(directory, gitlab_url, token, assignee_user, reviewer_user, source_branch, title, description, target_branch):
     try:
         gl = gitlab.Gitlab(url=gitlab_url, private_token=token)
         gl.auth()
@@ -60,7 +60,6 @@ def generate_mr(directory, gitlab_url, token, assignee_user, reviewer_user, sour
     if not source_branch:
         return 'Please select a source branch.'
 
-    target_branch = source_branch.split('__from__')[1].replace('@', '/')
     
     # Get project
     stdout, stderr = run_command(['git', 'remote', '-v'], directory)

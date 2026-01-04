@@ -509,6 +509,7 @@ class WorkspaceTab(QWidget):
             self.source_branch_combo.currentText(),
             self.mr_title_input.text(),
             self.mr_description_input.toPlainText(),
+            self.mr_target_branch_combo.currentText()
         )
         self.mr_output.setText(output)
 
