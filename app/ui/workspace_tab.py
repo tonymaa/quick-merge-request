@@ -563,7 +563,7 @@ class WorkspaceTab(QWidget):
         branches, message = get_local_branches(self.path)
         if not branches:
             branches, message = get_all_local_branches(self.path)
-        
+        branches = self.sort_source_branches_by_history(branches)
         processed_branches = []
         for branch in branches:
             if '__from__' in branch:
