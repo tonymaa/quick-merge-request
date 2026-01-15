@@ -124,10 +124,10 @@ def get_branch_diff(directory, feature_branch):
         # 获取feature分支的提交列表
         feature_cmd = ['git', 'log', '--oneline', f'origin/{source_part}..{feature_branch}']
         feature_stdout, feature_stderr = run_command(feature_cmd, directory)
-        
+
         if feature_stderr:
             return [], f'获取 {feature_branch} 分支差异失败: {feature_stderr}'
-        
+
         # 解析提交列表
         commits = []
         if feature_stdout.strip():
@@ -140,7 +140,39 @@ def get_branch_diff(directory, feature_branch):
                         'message': commit_msg,
                         'branch': feature_branch
                     })
-        
+
         return commits, None
     except Exception as e:
         return [], f'解析分支名失败: {str(e)}'
+
+
+def get_commits_between_branches(directory, source_branch, target_branch):
+    """获取源分支相对于目标分支的新提交列表（源分支有但目标分支没有的提交）"""
+    # 先执行 git fetch 更新远程分支信息
+    fetch_cmd = ['git', 'fetch', 'origin']
+    run_command(fetch_cmd, directory)
+
+    try:
+        # 获取源分支相对于目标分支的新提交
+        # 使用 git log target_branch..source_branch 获取source分支有但target分支没有的提交
+        log_cmd = ['git', 'log', '--oneline',  f'origin/{target_branch}..{source_branch}']
+        stdout, stderr = run_command(log_cmd, directory)
+
+        if stderr:
+            return [], f'获取分支间提交失败: {stderr}'
+
+        commits = []
+        if stdout.strip():
+            for line in stdout.strip().split('\n'):
+                if line.strip():
+                    parts = line.split(maxsplit=1)
+                    commit_hash = parts[0] if parts else ''
+                    commit_msg = parts[1] if len(parts) > 1 else ''
+                    commits.append({
+                        'hash': commit_hash,
+                        'message': commit_msg
+                    })
+
+        return commits, None
+    except Exception as e:
+        return [], f'获取提交失败: {str(e)}'

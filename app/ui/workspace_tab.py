@@ -12,10 +12,12 @@ from app.async_utils import run_blocking
 from quick_create_branch import create_branch as create_branch_func, get_remote_branches
 from quick_generate_mr_form import (
     get_local_branches, get_all_local_branches, generate_mr, get_mr_defaults,
-    parse_target_branch_from_source, get_gitlab_usernames, get_branch_diff
+    parse_target_branch_from_source, get_gitlab_usernames, get_branch_diff,
+    get_commits_between_branches
 )
 from app.widgets import NoWheelComboBox, enable_combo_search as util_enable_combo_search
 from PyQt5.QtWidgets import QScrollArea, QLabel
+from app.ui.commit_diff_dialog import CommitDiffDialog
 
 class WorkspaceTab(QWidget):
     def __init__(self, path, config, workspace_config, workspace_name=None):
@@ -159,7 +161,14 @@ class WorkspaceTab(QWidget):
 
         self.mr_title_input = QLineEdit()
         self.mr_description_input = QTextEdit()
+
+        # 创建按钮布局
+        mr_button_layout = QHBoxLayout()
+        self.view_commits_button = QPushButton('查看提交差异')
         self.create_mr_button = QPushButton('创建合并请求')
+        mr_button_layout.addWidget(self.view_commits_button)
+        mr_button_layout.addWidget(self.create_mr_button)
+
         self.mr_output = QTextEdit()
         self.mr_output.setReadOnly(True)
 
@@ -186,7 +195,7 @@ class WorkspaceTab(QWidget):
         layout.addRow('标题:', self.mr_title_input)
         layout.addRow('描述:', self.mr_description_input)
 
-        layout.addRow(self.create_mr_button)
+        layout.addRow(mr_button_layout)
         layout.addRow(self.mr_output)
 
         self.gitlab_url_input.textChanged.connect(self.save_gitlab_basic_config)
@@ -194,6 +203,7 @@ class WorkspaceTab(QWidget):
         self.refresh_branches_button.clicked.connect(self.run_refresh_branches)
         self.refresh_mr_target_branches_button.clicked.connect(self.run_refresh_mr_target_branches)
         self.source_branch_combo.currentIndexChanged.connect(self.update_mr_fields)
+        self.view_commits_button.clicked.connect(self.run_view_commits_diff)
         self.create_mr_button.clicked.connect(self.run_create_mr)
         self.refresh_users_button.clicked.connect(self.run_refresh_users)
         self.assignee_combo.currentTextChanged.connect(self.save_gitlab_user_selection)
@@ -556,6 +566,44 @@ class WorkspaceTab(QWidget):
             self.mr_output.setText(output)
 
         run_blocking(_create_mr, on_success=on_success, parent=self)
+
+    def run_view_commits_diff(self):
+        """查看源分支相对于目标分支的提交差异"""
+        source_branch = self.source_branch_combo.currentText()
+        target_branch = self.mr_target_branch_combo.currentText()
+
+        if not source_branch:
+            self.mr_output.setText('请先选择源分支。')
+            return
+        if not target_branch:
+            self.mr_output.setText('请先选择目标分支。')
+            return
+
+        self.mr_output.setText('正在获取提交差异...')
+        QApplication.processEvents()
+
+        def _fetch_commits():
+            return get_commits_between_branches(self.path, source_branch, target_branch)
+
+        def on_success(result):
+            commits, error = result
+            if error:
+                self.mr_output.setText(error)
+                dialog = CommitDiffDialog(source_branch, target_branch, [], self)
+                dialog.show_error(error)
+                return
+
+            # 显示对话框
+            dialog = CommitDiffDialog(source_branch, target_branch, commits, self)
+            dialog.exec_()
+
+            # 在输出区域显示摘要
+            if commits:
+                self.mr_output.setText(f'找到 {len(commits)} 个新提交。')
+            else:
+                self.mr_output.setText('源分支与目标分支之间没有新的提交。')
+
+        run_blocking(_fetch_commits, on_success=on_success, parent=self)
 
     def init_cherry_pick_tab(self):
         layout = QVBoxLayout()
