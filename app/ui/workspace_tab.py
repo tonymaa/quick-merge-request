@@ -8,6 +8,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication
 
+from app.async_utils import run_blocking
 from quick_create_branch import create_branch as create_branch_func, get_remote_branches
 from quick_generate_mr_form import (
     get_local_branches, get_all_local_branches, generate_mr, get_mr_defaults,
@@ -230,40 +231,51 @@ class WorkspaceTab(QWidget):
         if self.target_branch_list.count() == 0:
             self.create_branch_output.setText('请至少选择一个目标分支。')
             return
-            
+
         target_branches = [self.target_branch_list.item(i).text() for i in range(self.target_branch_list.count())]
         new_branch = self.new_branch_combo.currentText()
 
         self.create_branch_output.setText('处理中...')
         QApplication.processEvents()
-        
-        all_output = []
-        any_success = False
-        for target_branch in target_branches:
-            output = create_branch_func(self.path, target_branch, new_branch)
-            all_output.append(f'--- 对于目标分支: {target_branch} ---\n{output}')
-            if 'Branch created successfully!' in output:
-                any_success = True
-        
-        self.create_branch_output.setText('\n\n'.join(all_output))
-        if any_success and new_branch:
-            self.save_new_branch_to_history(new_branch)
-            prefix = self.get_default_new_branch_prefix()
-            self.new_branch_combo.setEditText(prefix)
+
+        def _create_all_branches():
+            """执行所有分支创建的阻塞函数"""
+            all_output = []
+            any_success = False
+            for target_branch in target_branches:
+                output = create_branch_func(self.path, target_branch, new_branch)
+                all_output.append(f'--- 对于目标分支: {target_branch} ---\n{output}')
+                if 'Branch created successfully!' in output:
+                    any_success = True
+            return all_output, any_success
+
+        def on_success(result):
+            all_output, any_success = result
+            self.create_branch_output.setText('\n\n'.join(all_output))
+            if any_success and new_branch:
+                self.save_new_branch_to_history(new_branch)
+                prefix = self.get_default_new_branch_prefix()
+                self.new_branch_combo.setEditText(prefix)
+
+        run_blocking(_create_all_branches, on_success=on_success, parent=self)
 
     def run_refresh_remote_branches(self):
         self.available_branches_list.clear()
         self.create_branch_output.setText('正在刷新远程分支...')
         QApplication.processEvents()
 
-        branches, message = get_remote_branches(self.path)
-        
         target_branches = {self.target_branch_list.item(i).text() for i in range(self.target_branch_list.count())}
-        
-        available_branches = [b for b in branches if b not in target_branches]
-        self.available_branches_list.addItems(available_branches)
-        
-        self.create_branch_output.setText(message)
+
+        def _fetch_branches():
+            return get_remote_branches(self.path)
+
+        def on_success(result):
+            branches, message = result
+            available_branches = [b for b in branches if b not in target_branches]
+            self.available_branches_list.addItems(available_branches)
+            self.create_branch_output.setText(message)
+
+        run_blocking(_fetch_branches, on_success=on_success, parent=self)
 
     def reload_new_branch_history(self):
         new_branch_text = self.new_branch_combo.currentText()
@@ -325,10 +337,19 @@ class WorkspaceTab(QWidget):
         others = []
         for b in branches:
             rank = None
-            for h in hist:
-                if b.startswith(h):
-                    rank = index_map[h]
-                    break
+            # 优先完全匹配，其次前缀匹配
+            if b in index_map:
+                rank = index_map[b]
+            else:
+                # 找最长的匹配前缀
+                best_match = None
+                best_len = 0
+                for h in hist:
+                    if b.startswith(h) and len(h) > best_len:
+                        best_match = h
+                        best_len = len(h)
+                if best_match is not None:
+                    rank = index_map[best_match]
             if rank is not None:
                 preferred.append((rank, b))
             else:
@@ -354,29 +375,46 @@ class WorkspaceTab(QWidget):
 
     def run_refresh_branches(self):
         self.source_branch_combo.clear()
-        self.mr_output.setText('正在加载本地分支...') 
+        self.mr_output.setText('正在加载本地分支...')
         QApplication.processEvents()
 
-        if hasattr(self, 'show_all_branches_checkbox') and self.show_all_branches_checkbox.isChecked():
-            valid_branches, message = get_all_local_branches(self.path)
-            self.source_branch_combo.addItems(valid_branches)
-        else:
-            valid_branches, message = get_local_branches(self.path)
-            ordered = self.sort_source_branches_by_history(valid_branches)
-            self.source_branch_combo.addItems(ordered)
-        self.mr_output.setText(message)
-        if valid_branches:
-            self.update_mr_fields()
+        show_all = hasattr(self, 'show_all_branches_checkbox') and self.show_all_branches_checkbox.isChecked()
+
+        def _fetch_branches(use_all=show_all):
+            if use_all:
+                return get_all_local_branches(self.path)
+            else:
+                return get_local_branches(self.path)
+
+        def on_success(result, use_all=show_all):
+            valid_branches, message = result
+            self.source_branch_combo.clear()  # 再次清空，防止重复
+            if use_all:
+                self.source_branch_combo.addItems(valid_branches)
+            else:
+                ordered = self.sort_source_branches_by_history(valid_branches)
+                self.source_branch_combo.addItems(ordered)
+            self.mr_output.setText(message)
+            if valid_branches:
+                self.update_mr_fields()
+
+        run_blocking(_fetch_branches, on_success=on_success, parent=self)
 
     def run_refresh_mr_target_branches(self):
         self.mr_target_branch_combo.clear()
         self.mr_output.setText('正在刷新远程分支...')
         QApplication.processEvents()
 
-        branches, message = get_remote_branches(self.path)
-        self.mr_target_branch_combo.addItems(branches)
-        self.mr_output.setText(message)
-        self.update_mr_fields()
+        def _fetch_branches():
+            return get_remote_branches(self.path)
+
+        def on_success(result):
+            branches, message = result
+            self.mr_target_branch_combo.addItems(branches)
+            self.mr_output.setText(message)
+            self.update_mr_fields()
+
+        run_blocking(_fetch_branches, on_success=on_success, parent=self)
 
     def enable_combo_search(self, combo):
         util_enable_combo_search(combo)
@@ -384,22 +422,23 @@ class WorkspaceTab(QWidget):
     def run_refresh_users(self):
         self.mr_output.setText('正在刷新用户...')
         QApplication.processEvents()
-        gitlab_config = self.config.find('gitlab') if self.config is not None else None
-        def get_config_value(element, tag, default=''):
-            if element is not None:
-                found = element.find(tag)
-                if found is not None and found.text:
-                    return found.text.strip()
-            return default
+
         url = self.gitlab_url_input.text()
         token = self.token_input.text()
-        users, error = get_gitlab_usernames(url, token)
-        if error:
-            self.mr_output.setText(error)
-            return
-        self.assignee_combo.addItems(users)
-        self.reviewer_combo.addItems(users)
-        self.init_users_selection()
+
+        def _fetch_users():
+            return get_gitlab_usernames(url, token)
+
+        def on_success(result):
+            users, error = result
+            if error:
+                self.mr_output.setText(error)
+                return
+            self.assignee_combo.addItems(users)
+            self.reviewer_combo.addItems(users)
+            self.init_users_selection()
+
+        run_blocking(_fetch_users, on_success=on_success, parent=self)
 
     def init_users_selection(self):
         gitlab_config = self.config.find('gitlab') if self.config is not None else None
@@ -500,18 +539,23 @@ class WorkspaceTab(QWidget):
         self.mr_output.setText('处理中...')
         QApplication.processEvents()
 
-        output = generate_mr(
-            self.path,
-            self.gitlab_url_input.text(),
-            self.token_input.text(),
-            self.assignee_combo.currentText(),
-            self.reviewer_combo.currentText(),
-            self.source_branch_combo.currentText(),
-            self.mr_title_input.text(),
-            self.mr_description_input.toPlainText(),
-            self.mr_target_branch_combo.currentText()
-        )
-        self.mr_output.setText(output)
+        def _create_mr():
+            return generate_mr(
+                self.path,
+                self.gitlab_url_input.text(),
+                self.token_input.text(),
+                self.assignee_combo.currentText(),
+                self.reviewer_combo.currentText(),
+                self.source_branch_combo.currentText(),
+                self.mr_title_input.text(),
+                self.mr_description_input.toPlainText(),
+                self.mr_target_branch_combo.currentText()
+            )
+
+        def on_success(output):
+            self.mr_output.setText(output)
+
+        run_blocking(_create_mr, on_success=on_success, parent=self)
 
     def init_cherry_pick_tab(self):
         layout = QVBoxLayout()
@@ -552,82 +596,123 @@ class WorkspaceTab(QWidget):
 
     def run_refresh_cherry_pick_branches(self):
         self.cherry_pick_branch_combo.clear()
-        
+
         for i in reversed(range(self.cherry_pick_diff_scroll_area.count())):
             self.cherry_pick_diff_scroll_area.itemAt(i).widget().setParent(None)
-        
+
         loading_label = QLabel('正在加载分支...')
         self.cherry_pick_diff_scroll_area.addWidget(loading_label)
         QApplication.processEvents()
-        
-        branches, message = get_local_branches(self.path)
-        if not branches:
-            branches, message = get_all_local_branches(self.path)
-        branches = self.sort_source_branches_by_history(branches)
-        processed_branches = []
-        for branch in branches:
-            if '__from__' in branch:
-                processed_branch = branch.split('__from__')[0]
-                if processed_branch and processed_branches.count(processed_branch) == 0:
-                    processed_branches.append(processed_branch)
-            elif branch not in processed_branches:
-                processed_branches.append(branch)
-        
-        self.cherry_pick_branch_combo.addItems(processed_branches)
-        
-        for i in reversed(range(self.cherry_pick_diff_scroll_area.count())):
-            self.cherry_pick_diff_scroll_area.itemAt(i).widget().setParent(None)
-        
-        result_label = QLabel(message)
-        self.cherry_pick_diff_scroll_area.addWidget(result_label)
+
+        def _fetch_and_process_branches():
+            branches, message = get_local_branches(self.path)
+            if not branches:
+                branches, message = get_all_local_branches(self.path)
+            branches = self.sort_source_branches_by_history(branches)
+            processed_branches = []
+            for branch in branches:
+                if '__from__' in branch:
+                    processed_branch = branch.split('__from__')[0]
+                    if processed_branch and processed_branches.count(processed_branch) == 0:
+                        processed_branches.append(processed_branch)
+                elif branch not in processed_branches:
+                    processed_branches.append(branch)
+            return processed_branches, message
+
+        def on_success(result):
+            processed_branches, message = result
+            self.cherry_pick_branch_combo.addItems(processed_branches)
+
+            for i in reversed(range(self.cherry_pick_diff_scroll_area.count())):
+                self.cherry_pick_diff_scroll_area.itemAt(i).widget().setParent(None)
+
+            result_label = QLabel(message)
+            self.cherry_pick_diff_scroll_area.addWidget(result_label)
+
+        run_blocking(_fetch_and_process_branches, on_success=on_success, parent=self)
 
     def run_cherry_pick(self):
         selected_branch = self.cherry_pick_branch_combo.currentText()
         if not selected_branch:
             return
-        
+
         for i in reversed(range(self.cherry_pick_diff_scroll_area.count())):
             self.cherry_pick_diff_scroll_area.itemAt(i).widget().setParent(None)
-        
-        branches, message = get_local_branches(self.path)
-        if not branches:
-            branches, message = get_all_local_branches(self.path)
-        
-        matching_branches = []
-        for branch in branches:
-            if '__from__' in branch:
-                branch_prefix = branch.split('__from__')[0]
-                if branch_prefix == selected_branch:
-                    matching_branches.append(branch)
-        
-        if not matching_branches:
-            error_label = QLabel(f'找不到以 "{selected_branch}" 开头的完整分支名')
-            self.cherry_pick_diff_scroll_area.addWidget(error_label)
-            return
-        
-        for branch in matching_branches:
-            commits, error = get_branch_diff(self.path, branch)
-            
-            branch_title = QLabel(f'<b>分支 "{branch}" 的新提交:</b>')
-            branch_title.setStyleSheet('color: #2c3e50; font-size: 14px; margin-top: 10px; margin-bottom: 5px;')
-            self.cherry_pick_diff_scroll_area.addWidget(branch_title)
-            
-            if error:
-                error_label = QLabel(f'获取分支差异失败: {error}')
-                error_label.setStyleSheet('color: #e74c3c;')
+
+        def _fetch_matching_branches():
+            branches, message = get_local_branches(self.path)
+            if not branches:
+                branches, message = get_all_local_branches(self.path)
+
+            matching_branches = []
+            for branch in branches:
+                if '__from__' in branch:
+                    branch_prefix = branch.split('__from__')[0]
+                    if branch_prefix == selected_branch:
+                        matching_branches.append(branch)
+            return matching_branches, message
+
+        def on_branches_fetched(result):
+            matching_branches, message = result
+
+            if not matching_branches:
+                error_label = QLabel(f'找不到以 "{selected_branch}" 开头的完整分支名')
                 self.cherry_pick_diff_scroll_area.addWidget(error_label)
-                continue
-            
-            if commits:
-                diff_text = QTextEdit()
-                diff_text.setReadOnly(True)
-                diff_content = ''
-                for commit in commits:
-                    diff_content += f'{commit["hash"]} {commit["message"]}\n'
-                diff_text.setPlainText(diff_content)
-                diff_text.setMaximumHeight(100)
-                self.cherry_pick_diff_scroll_area.addWidget(diff_text)
-            else:
-                no_diff_label = QLabel('此分支与源分支之间没有差异或无法获取差异信息。')
-                no_diff_label.setStyleSheet('color: #7f8c8d;')
-                self.cherry_pick_diff_scroll_area.addWidget(no_diff_label)
+                return
+
+            # 为每个分支创建占位容器，保持顺序
+            diff_containers = []
+            for branch in matching_branches:
+                container = QWidget()
+                container_layout = QVBoxLayout()
+                container_layout.setContentsMargins(0, 0, 0, 0)
+                container.setLayout(container_layout)
+
+                branch_title = QLabel(f'<b>分支 "{branch}" 的新提交:</b>')
+                branch_title.setStyleSheet('color: #2c3e50; font-size: 14px; margin-top: 10px; margin-bottom: 5px;')
+                container_layout.addWidget(branch_title)
+
+                # 添加加载占位符
+                loading_label = QLabel('加载中...')
+                loading_label.setStyleSheet('color: #7f8c8d; font-style: italic;')
+                container_layout.addWidget(loading_label)
+
+                diff_containers.append((branch, container, loading_label))
+                self.cherry_pick_diff_scroll_area.addWidget(container)
+
+            # 异步获取每个分支的差异
+            for branch, container, loading_label in diff_containers:
+                def _fetch_diff(b=branch):
+                    return get_branch_diff(self.path, b)
+
+                def on_diff_fetched(diff_result, b=branch, container=container, loading_label=loading_label):
+                    commits, error = diff_result
+
+                    # 移除加载占位符
+                    if loading_label:
+                        container.layout().removeWidget(loading_label)
+                        loading_label.deleteLater()
+
+                    if error:
+                        error_label = QLabel(f'获取分支差异失败: {error}')
+                        error_label.setStyleSheet('color: #e74c3c;')
+                        container.layout().addWidget(error_label)
+                        return
+
+                    if commits:
+                        diff_text = QTextEdit()
+                        diff_text.setReadOnly(True)
+                        diff_content = ''
+                        for commit in commits:
+                            diff_content += f'{commit["hash"]} {commit["message"]}\n'
+                        diff_text.setPlainText(diff_content)
+                        diff_text.setMaximumHeight(100)
+                        container.layout().addWidget(diff_text)
+                    else:
+                        no_diff_label = QLabel('此分支与源分支之间没有差异或无法获取差异信息。')
+                        no_diff_label.setStyleSheet('color: #7f8c8d;')
+                        container.layout().addWidget(no_diff_label)
+
+                run_blocking(_fetch_diff, on_success=on_diff_fetched, parent=self)
+
+        run_blocking(_fetch_matching_branches, on_success=on_branches_fetched, parent=self)

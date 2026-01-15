@@ -110,13 +110,17 @@ def get_branch_diff(directory, feature_branch):
     # 检查分支是否包含__from__模式
     if '__from__' not in feature_branch:
         return [], f'分支 {feature_branch} 不包含 __from__ 模式，无法比较差异'
-    
+
+    # 先执行 git fetch 更新远程分支信息
+    fetch_cmd = ['git', 'fetch', 'origin']
+    run_command(fetch_cmd, directory)
+
     # 从feature分支名中提取source分支名
     try:
         parts = feature_branch.split('__from__')
         feature_part = parts[0]
         source_part = parts[1].replace('@', '/')  # 将@替换回/
-        
+
         # 获取feature分支的提交列表
         feature_cmd = ['git', 'log', '--oneline', f'origin/{source_part}..{feature_branch}']
         feature_stdout, feature_stderr = run_command(feature_cmd, directory)
