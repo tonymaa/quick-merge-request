@@ -95,7 +95,9 @@ class GitWatcher:
         self.max_commits = 100  # 最多保存100条提交记录
         self.repo_workspace_names: Dict[str, str] = {}  # repo_path -> workspace_name 映射
         self.commit_listeners: List[callable] = []  # 新提交监听器列表
+        self.initial_commit_count = 0  # 记录初始化时的提交数量，用于检测新提交
         self._load_commits_from_cache()
+        self.initial_commit_count = len(self.commits)
 
     def add_commit_listener(self, callback: callable):
         """添加提交变化监听器"""
@@ -107,18 +109,29 @@ class GitWatcher:
         if callback in self.commit_listeners:
             self.commit_listeners.remove(callback)
 
-    def _notify_commit_listeners(self):
-        """通知所有监听器有新提交"""
+    def _notify_commit_listeners(self, is_new: bool = False):
+        """通知所有监听器有新提交
+
+        Args:
+            is_new: 是否是真正的新提交（非缓存加载的）
+        """
         with self.lock:
             commits_copy = self.commits.copy()
         for listener in self.commit_listeners:
             try:
-                listener(commits_copy)
+                # 检查监听器是否接受两个参数（commits, is_new）
+                import inspect
+                sig = inspect.signature(listener)
+                if len(sig.parameters) >= 2:
+                    listener(commits_copy, is_new)
+                else:
+                    listener(commits_copy)
             except Exception:
                 pass
 
     def _on_new_commit(self, commit_info: dict):
         """新提交回调"""
+        is_new_commit = False
         with self.lock:
             # 避免重复记录
             for existing in self.commits:
@@ -128,12 +141,18 @@ class GitWatcher:
             # 限制记录数量
             if len(self.commits) > self.max_commits:
                 self.commits = self.commits[:self.max_commits]
+            # 判断是否是真正的新提交（非缓存加载的）
+            is_new_commit = len(self.commits) > self.initial_commit_count
+            # 如果是真正的新提交（非缓存加载），显示系统通知
+            print(is_new_commit)
+            if is_new_commit and self.commits:
+                self._show_system_notification(self.commits[0])
 
         # 保存到缓存
         self._save_commits_to_cache()
 
-        # 通知所有监听器
-        self._notify_commit_listeners()
+        # 通知所有监听器，传递是否是新提交的标志
+        self._notify_commit_listeners(is_new_commit)
 
     def _load_commits_from_cache(self):
         """从缓存加载提交历史"""
@@ -234,6 +253,38 @@ class GitWatcher:
     def __del__(self):
         """析构函数 - 确保所有观察者都被正确停止"""
         self.stop_all()
+
+
+    def _show_system_notification(self, commit: Dict):
+        """显示 Windows 系统通知"""
+        try:
+            from win10toast import ToastNotifier
+            toaster = ToastNotifier()
+
+            # 在后台线程中显示通知，避免阻塞 UI
+            def show_toast():
+                try:
+                    title = f"新提交检测 - {commit.get('repo', 'Unknown')}"
+                    message = f"{commit.get('message', 'No message')[:50]}\n作者: {commit.get('author', 'Unknown')}"
+                    # 显示通知，持续5秒
+                    toaster.show_toast(
+                        title,
+                        message,
+                        icon_path=None,  # 可以指定图标路径
+                        duration=5,
+                        threaded=True
+                    )
+                except Exception:
+                    pass
+
+            # 在单独的线程中执行，避免阻塞
+            thread = Thread(target=show_toast, daemon=True)
+            thread.start()
+        except ImportError:
+            # win10toast 未安装，静默忽略
+            pass
+        except Exception:
+            pass
 
 
 # 全局单例
