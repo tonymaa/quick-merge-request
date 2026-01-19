@@ -108,17 +108,11 @@ class CommitNotificationDialog(QDialog):
 
     def on_new_commit(self, commits: List[Dict]):
         """新提交回调 - 当 watcher �测到新提交时主动调用"""
-        print(f"[DEBUG] on_new_commit called with {len(commits)} commits")
-        print(f"[DEBUG] Emitting signal for _do_on_new_commit")
         # Qt 的信号槽机制会自动处理跨线程通信
         self.commit_emitter.new_commit_signal.emit(commits)
 
     def _do_on_new_commit(self, commits: List[Dict]):
         """实际执行新提交处理的逻辑"""
-        print(f'[DEBUG] _do_on_new_commit called with {len(commits)} commits')
-        print(f"[DEBUG] self.commits = {self.commits}")
-        print(f'[DEBUG] self.content_widget = {self.content_widget}')
-        print(f'[DEBUG] self.content_widget.parent() = {self.content_widget.parent()}')
 
         # 不需要更新 self.commits，因为它本身就是 watcher.commits 的引用
 
@@ -130,7 +124,6 @@ class CommitNotificationDialog(QDialog):
             self._update_title(f'监听到 {len(self.commits)} 条新提交')
             # 自动滚动到顶部显示最新提交
             scroll_bar = self.scroll_area.verticalScrollBar()
-            print(f'[DEBUG] scroll_bar = {scroll_bar}')
             if scroll_bar:
                 scroll_bar.setValue(0)
         else:
@@ -290,7 +283,6 @@ class CommitNotificationDialog(QDialog):
 
     def _update_title(self, text: str):
         """更新标题文本"""
-        print(f"[DEBUG] _update_title: text={repr(text)}")
         # 查找标题标签并更新
         for i in range(self.layout().count()):
             widget = self.layout().itemAt(i).widget()
@@ -299,9 +291,7 @@ class CommitNotificationDialog(QDialog):
                     item = widget.itemAt(j)
                     if item and isinstance(item.widget(), QLabel):
                         label = item.widget()
-                        old_text = label.text()
                         label.setText(f'<b>{text}</b>')
-                        print(f"[DEBUG] _update_title: updated from {repr(old_text)} to {repr(label.text())}")
                         return
 
     def clear_records(self):

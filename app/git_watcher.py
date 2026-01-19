@@ -24,8 +24,6 @@ class GitEventHandler(FileSystemEventHandler):
     def _get_current_commit(self) -> Optional[dict]:
         """获取当前最新提交信息"""
         try:
-            print(f"[DEBUG] _get_current_commit: repo_path={self.repo_path}, workspace_name={self.workspace_name}")
-
             # 获取当前分支名
             branch_result = subprocess.run(
                 ['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
@@ -43,7 +41,6 @@ class GitEventHandler(FileSystemEventHandler):
                 text=True,
                 check=True
             )
-            print(f"[DEBUG] _get_current_commit: returncode={result.returncode}, stdout={result.stdout.strip()[:100] if result.stdout else 'None'}")
             if result.returncode == 0:
                 parts = result.stdout.strip().split('|')
                 if len(parts) >= 4:
@@ -56,15 +53,12 @@ class GitEventHandler(FileSystemEventHandler):
                         'repo_path': self.repo_path,
                         'branch': current_branch
                     }
-        except Exception as e:
-            print(f"[DEBUG] _get_current_commit: exception: {e}")
+        except Exception:
             pass
         return None
 
     def on_modified(self, event):
         """文件修改事件处理"""
-        print(f"[DEBUG] on_modified: src_path={event.src_path}, is_directory={event.is_directory}")
-
         # 标准化路径分隔符，兼容 Windows 和 Unix
         normalized_path = event.src_path.replace('\\', '/')
 
@@ -78,16 +72,12 @@ class GitEventHandler(FileSystemEventHandler):
         ]
 
         if not any(pattern in normalized_path for pattern in git_ref_patterns):
-            print(f"[DEBUG] on_modified: skipping (not a git ref file)")
             return
 
-        print(f"[DEBUG] on_modified: processing git ref change")
         with self.lock:
             current_commit = self._get_current_commit()
-            print(f"[DEBUG] on_modified: current_commit={current_commit}, last_commit={self.last_commit}")
             if current_commit and current_commit != self.last_commit:
                 if self.last_commit is None or current_commit['hash'] != self.last_commit['hash']:
-                    print(f"[DEBUG] on_modified: NEW COMMIT DETECTED! hash={current_commit['hash'][:8]}")
                     self.last_commit = current_commit
                     self.on_new_commit(current_commit)
 
@@ -117,23 +107,19 @@ class GitWatcher:
         """通知所有监听器有新提交"""
         with self.lock:
             commits_copy = self.commits.copy()
-            print(f"[DEBUG] _notify_commit_listeners: notifying {len(self.commit_listeners)} listeners, commits={commits_copy}")
         for listener in self.commit_listeners:
             try:
                 listener(commits_copy)
-            except Exception as e:
-                print(f"[DEBUG] Error notifying listener: {e}")
+            except Exception:
+                pass
 
     def _on_new_commit(self, commit_info: dict):
         """新提交回调"""
-        print(f"[DEBUG] _on_new_commit: commit_info={commit_info}")
         with self.lock:
             # 避免重复记录
             for existing in self.commits:
                 if existing.get('hash') == commit_info.get('hash'):
-                    print(f"[DEBUG] _on_new_commit: duplicate commit, skipping")
                     return
-            print(f"[DEBUG] _on_new_commit: adding new commit, total commits={len(self.commits) + 1}")
             self.commits.insert(0, commit_info)
             # 限制记录数量
             if len(self.commits) > self.max_commits:
@@ -156,19 +142,15 @@ class GitWatcher:
         repo_path = os.path.abspath(repo_path)
         git_dir = os.path.join(repo_path, '.git')
 
-        print(f"[DEBUG] add_repository: repo_path={repo_path}, workspace_name={workspace_name}, git_dir={git_dir}")
-
         # 保存 workspace_name 映射
         self.repo_workspace_names[repo_path] = workspace_name
 
         # 检查是否是 Git 仓库
         if not os.path.exists(git_dir):
-            print(f"[DEBUG] add_repository: not a git repo, {git_dir} does not exist")
             return False
 
         # 如果已经在监听，先停止
         if repo_path in self.observers:
-            print(f"[DEBUG] add_repository: repo already being watched, removing first")
             self.remove_repository(repo_path)
 
         try:
@@ -185,10 +167,8 @@ class GitWatcher:
             observer.start()
 
             self.observers[repo_path] = observer
-            print(f"[DEBUG] add_repository: successfully started watching {repo_path}")
             return True
-        except Exception as e:
-            print(f"[DEBUG] add_repository: failed with exception: {e}")
+        except Exception:
             return False
 
     def remove_repository(self, repo_path: str):
