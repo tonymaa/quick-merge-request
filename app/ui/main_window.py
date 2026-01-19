@@ -198,11 +198,11 @@ class App(QWidget):
 
     def show_commit_notifications(self):
         """显示提交通知对话框"""
-        commits = self.git_watcher.get_commits()
-        dialog = CommitNotificationDialog(commits, self)
+        # 直接传递 watcher 的 commits 列表的引用，而不是副本
+        dialog = CommitNotificationDialog(self.git_watcher.commits, self)
         result = dialog.exec_()
 
         # 如果用户在对话框中清空了记录，需要更新 watcher
-        if not dialog.commits:
+        if not self.git_watcher.commits:
             self.git_watcher.clear_commits()
 

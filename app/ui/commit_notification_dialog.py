@@ -5,11 +5,19 @@ from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QTextEdit, QLabel, QPushButton, QHBoxLayout,
     QMessageBox, QScrollArea, QWidget
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QObject, pyqtSignal
 from typing import List, Dict, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from app.ui.main_window import App
+
+
+class CommitEmitter(QObject):
+    """用于跨线程信号传递的辅助类"""
+    new_commit_signal = pyqtSignal(object)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
 
 
 class CommitNotificationDialog(QDialog):
@@ -17,9 +25,16 @@ class CommitNotificationDialog(QDialog):
 
     def __init__(self, commits: List[Dict], parent=None):
         super().__init__(parent)
+        # 不保存副本，直接引用 watcher 的 commits 列表
         self.commits = commits
         self.main_window: 'App' = parent
+        self.commit_emitter = CommitEmitter(self)
+        self.commit_emitter.new_commit_signal.connect(self._do_on_new_commit)
         self.initUI()
+
+        # 注册为新提交监听器
+        if self.main_window and self.main_window.git_watcher:
+            self.main_window.git_watcher.add_commit_listener(self.on_new_commit)
 
     def initUI(self):
         self.setWindowTitle('新提交通知')
@@ -40,6 +55,12 @@ class CommitNotificationDialog(QDialog):
         header_layout.addWidget(title_label)
         header_layout.addStretch()
 
+        # 刷新按钮
+        self.refresh_button = QPushButton('🔄 刷新')
+        self.refresh_button.setToolTip('手动刷新提交记录')
+        self.refresh_button.clicked.connect(self.refresh_commits)
+        header_layout.addWidget(self.refresh_button)
+
         # 清空按钮
         self.clear_button = QPushButton('清空记录')
         self.clear_button.clicked.connect(self.clear_records)
@@ -48,29 +69,72 @@ class CommitNotificationDialog(QDialog):
         layout.addLayout(header_layout)
 
         # 提交列表区域 - 使用滚动区域
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
         # 创建内容容器
         self.content_widget = QWidget()
         self.content_layout = QVBoxLayout()
         self.content_layout.setAlignment(Qt.AlignTop)
         self.content_widget.setLayout(self.content_layout)
-        scroll_area.setWidget(self.content_widget)
+        self.scroll_area.setWidget(self.content_widget)
 
         # 填充提交信息
         self._populate_commits()
 
-        layout.addWidget(scroll_area)
+        layout.addWidget(self.scroll_area)
+
+        # 按钮栏
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
 
         # 关闭按钮
         close_button = QPushButton('关闭')
         close_button.clicked.connect(self.accept)
-        layout.addWidget(close_button)
+        button_layout.addWidget(close_button)
+
+        layout.addLayout(button_layout)
 
         self.setLayout(layout)
+
+    def closeEvent(self, event):
+        """对话框关闭时移除监听器"""
+        # 移除提交监听器
+        if self.main_window and self.main_window.git_watcher:
+            self.main_window.git_watcher.remove_commit_listener(self.on_new_commit)
+        super().closeEvent(event)
+
+    def on_new_commit(self, commits: List[Dict]):
+        """新提交回调 - 当 watcher �测到新提交时主动调用"""
+        print(f"[DEBUG] on_new_commit called with {len(commits)} commits")
+        print(f"[DEBUG] Emitting signal for _do_on_new_commit")
+        # Qt 的信号槽机制会自动处理跨线程通信
+        self.commit_emitter.new_commit_signal.emit(commits)
+
+    def _do_on_new_commit(self, commits: List[Dict]):
+        """实际执行新提交处理的逻辑"""
+        print(f'[DEBUG] _do_on_new_commit called with {len(commits)} commits')
+        print(f"[DEBUG] self.commits = {self.commits}")
+        print(f'[DEBUG] self.content_widget = {self.content_widget}')
+        print(f'[DEBUG] self.content_widget.parent() = {self.content_widget.parent()}')
+
+        # 不需要更新 self.commits，因为它本身就是 watcher.commits 的引用
+
+        # 更新界面
+        self._populate_commits()
+
+        # 更新标题
+        if self.commits:
+            self._update_title(f'监听到 {len(self.commits)} 条新提交')
+            # 自动滚动到顶部显示最新提交
+            scroll_bar = self.scroll_area.verticalScrollBar()
+            print(f'[DEBUG] scroll_bar = {scroll_bar}')
+            if scroll_bar:
+                scroll_bar.setValue(0)
+        else:
+            self._update_title('暂无新提交记录')
 
     def _populate_commits(self):
         """填充提交信息到界面"""
@@ -212,6 +276,33 @@ class CommitNotificationDialog(QDialog):
             parent=self
         )
         dialog.exec_()
+
+    def refresh_commits(self):
+        """刷新提交记录 - 手动刷新按钮触发"""
+        # 由于现在使用引用，不需要手动刷新，保留此按钮以提供用户反馈
+        self._populate_commits()
+
+        # 更新标题
+        if self.commits:
+            self._update_title(f'监听到 {len(self.commits)} 条新提交')
+        else:
+            self._update_title('暂无新提交记录')
+
+    def _update_title(self, text: str):
+        """更新标题文本"""
+        print(f"[DEBUG] _update_title: text={repr(text)}")
+        # 查找标题标签并更新
+        for i in range(self.layout().count()):
+            widget = self.layout().itemAt(i).widget()
+            if isinstance(widget, QHBoxLayout):
+                for j in range(widget.count()):
+                    item = widget.itemAt(j)
+                    if item and isinstance(item.widget(), QLabel):
+                        label = item.widget()
+                        old_text = label.text()
+                        label.setText(f'<b>{text}</b>')
+                        print(f"[DEBUG] _update_title: updated from {repr(old_text)} to {repr(label.text())}")
+                        return
 
     def clear_records(self):
         """清空记录"""

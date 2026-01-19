@@ -101,6 +101,28 @@ class GitWatcher:
         self.lock = Lock()
         self.max_commits = 100  # 最多保存100条提交记录
         self.repo_workspace_names: Dict[str, str] = {}  # repo_path -> workspace_name 映射
+        self.commit_listeners: List[callable] = []  # 新提交监听器列表
+
+    def add_commit_listener(self, callback: callable):
+        """添加提交变化监听器"""
+        if callback not in self.commit_listeners:
+            self.commit_listeners.append(callback)
+
+    def remove_commit_listener(self, callback: callable):
+        """移除提交变化监听器"""
+        if callback in self.commit_listeners:
+            self.commit_listeners.remove(callback)
+
+    def _notify_commit_listeners(self):
+        """通知所有监听器有新提交"""
+        with self.lock:
+            commits_copy = self.commits.copy()
+            print(f"[DEBUG] _notify_commit_listeners: notifying {len(self.commit_listeners)} listeners, commits={commits_copy}")
+        for listener in self.commit_listeners:
+            try:
+                listener(commits_copy)
+            except Exception as e:
+                print(f"[DEBUG] Error notifying listener: {e}")
 
     def _on_new_commit(self, commit_info: dict):
         """新提交回调"""
@@ -116,6 +138,9 @@ class GitWatcher:
             # 限制记录数量
             if len(self.commits) > self.max_commits:
                 self.commits = self.commits[:self.max_commits]
+
+        # 通知所有监听器
+        self._notify_commit_listeners()
 
     def add_repository(self, repo_path: str, workspace_name: str) -> bool:
         """
