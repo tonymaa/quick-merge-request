@@ -3,3 +3,4 @@ python-gitlab
 requests
 watchdog
 win10toast
+Windows-Toasts

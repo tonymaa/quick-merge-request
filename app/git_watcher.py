@@ -96,8 +96,13 @@ class GitWatcher:
         self.repo_workspace_names: Dict[str, str] = {}  # repo_path -> workspace_name 映射
         self.commit_listeners: List[callable] = []  # 新提交监听器列表
         self.initial_commit_count = 0  # 记录初始化时的提交数量，用于检测新提交
+        self.main_window = None  # 主窗口引用，用于打开通知对话框
         self._load_commits_from_cache()
         self.initial_commit_count = len(self.commits)
+
+    def set_main_window(self, main_window):
+        """设置主窗口引用，用于通知按钮点击时打开对话框"""
+        self.main_window = main_window
 
     def add_commit_listener(self, callback: callable):
         """添加提交变化监听器"""
@@ -256,7 +261,101 @@ class GitWatcher:
 
 
     def _show_system_notification(self, commit: Dict):
-        """显示 Windows 系统通知"""
+        """显示 Windows 系统通知（带按钮）"""
+        # 优先尝试使用 windows_toast（支持按钮）
+        try:
+            from windows_toasts import InteractableWindowsToaster, Toast, ToastButton
+            import ctypes
+
+            # 必须在主线程中创建和显示 Windows 通知
+            # 检查当前是否在主线程
+            current_thread_id = ctypes.windll.kernel32.GetCurrentThreadId()
+            main_thread_id = getattr(self, '_main_thread_id', None)
+
+            if main_thread_id is None:
+                # 首次运行，记录主线程 ID
+                self._main_thread_id = current_thread_id
+                main_thread_id = current_thread_id
+
+            if current_thread_id != main_thread_id:
+                # 不在主线程，使用 QTimer 切换到主线程执行
+                if self.main_window:
+                    from PyQt5.QtCore import QTimer
+                    # 延迟执行，避免阻塞
+                    QTimer.singleShot(100, lambda c=commit: self._show_system_notification(c))
+                    return
+
+            # 使用 InteractableWindowsToaster 以支持按钮
+            toaster = InteractableWindowsToaster('GitLab 快捷工具')
+            newToast = Toast()
+
+            # 设置通知文本
+            title = f"新提交检测 - {commit.get('repo', 'Unknown')}"
+            message = f"{commit.get('message', 'No message')[:50]}\n作者: {commit.get('author', 'Unknown')}"
+
+            newToast.text_fields = [title, message]
+
+            # 添加按钮 - 点击后打开通知对话框
+            # 使用 'view_details' 作为标识符
+            newToast.AddAction(ToastButton('查看详情', 'view_details'))
+
+            # 处理通知激活事件（按钮点击或通知本身被点击）
+            # 将回调保存为实例属性，避免被垃圾回收
+            def on_activated(event_args):
+                """通知被激活时的回调"""
+                print(f"[DEBUG] 通知被触发，event_args: {event_args}")
+                print(f"[DEBUG] event_args 类型: {type(event_args)}")
+                print(f"[DEBUG] event_args 属性: {dir(event_args)}")
+
+                # 检查是否点击了按钮
+                args = None
+                if hasattr(event_args, 'arguments'):
+                    args = event_args.arguments
+                    print(f"[DEBUG] arguments: {args}")
+                elif hasattr(event_args, 'input'):
+                    args = event_args.input
+                    print(f"[DEBUG] input: {args}")
+
+                # 打印所有可能的属性
+                for attr in ['arguments', 'input', 'argument', 'value']:
+                    if hasattr(event_args, attr):
+                        print(f"[DEBUG] event_args.{attr} = {getattr(event_args, attr)}")
+
+                if args == 'view_details':
+                    print(f"[DEBUG] 匹配到 view_details，main_window: {self.main_window}")
+                    if self.main_window:
+                        print(f"[DEBUG] 准备调用 show_commit_notifications")
+                        # 必须在主线程中执行 UI 操作，使用 QTimer 切换线程
+                        from PyQt5.QtCore import QTimer, QCoreApplication
+
+                        # 确保在主线程中执行
+                        app = QCoreApplication.instance()
+                        if app:
+                            QTimer.singleShot(0, self.main_window.show_commit_notifications)
+                            print(f"[DEBUG] 已调度 show_commit_notifications 到主线程")
+                        else:
+                            print(f"[DEBUG] 错误: 无法获取 QCoreApplication 实例")
+
+            newToast.on_activated = on_activated
+            # 保存回调引用，防止被垃圾回收
+            self._toast_callback = newToast.on_activated
+
+            # 显示通知（不需要线程，windows_toasts 内部处理异步）
+            toaster.show_toast(newToast)
+            return
+        except ImportError:
+            # windows_toast 未安装，尝试降级方案
+            pass
+        except Exception:
+            # 其他错误，尝试降级方案
+            import traceback
+            traceback.print_exc()  # 打印错误信息用于调试
+
+        # 降级方案：使用 win10toast
+        self._show_fallback_notification(commit)
+
+    def _show_fallback_notification(self, commit: Dict):
+        """降级方案：使用 win10toast 显示通知（不支持按钮）"""
         try:
             from win10toast import ToastNotifier
             toaster = ToastNotifier()
@@ -281,7 +380,7 @@ class GitWatcher:
             thread = Thread(target=show_toast, daemon=True)
             thread.start()
         except ImportError:
-            # win10toast 未安装，静默忽略
+            # win10toast 也未安装，静默忽略
             pass
         except Exception:
             pass

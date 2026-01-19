@@ -20,6 +20,8 @@ class App(QWidget):
         self.height = 700
         self.config = self.load_config()
         self.git_watcher = get_global_watcher()
+        # 设置主窗口引用，用于通知按钮点击时打开对话框
+        self.git_watcher.set_main_window(self)
         self.initUI()
 
     def load_config(self):
