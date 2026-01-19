@@ -84,6 +84,7 @@ class CreateMRDialog(QDialog):
         self.source_branch_combo = NoWheelComboBox()
         self.refresh_branches_button = QPushButton('刷新本地分支')
         self.show_all_branches_checkbox = QCheckBox('显示所有分支')
+        self.show_all_branches_checkbox.setChecked(True)
 
         source_branch_layout = QHBoxLayout()
         source_branch_layout.addWidget(self.source_branch_combo)
