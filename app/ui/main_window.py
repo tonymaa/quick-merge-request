@@ -7,6 +7,8 @@ from PyQt5.QtWidgets import (
 )
 from app.styles import apply_global_styles
 from app.ui.workspace_tab import WorkspaceTab
+from app.ui.commit_notification_dialog import CommitNotificationDialog
+from app.git_watcher import get_global_watcher
 
 class App(QWidget):
     def __init__(self):
@@ -17,6 +19,7 @@ class App(QWidget):
         self.width = 800
         self.height = 700
         self.config = self.load_config()
+        self.git_watcher = get_global_watcher()
         self.initUI()
 
     def load_config(self):
@@ -60,7 +63,9 @@ class App(QWidget):
 
         workspace_buttons_layout = QHBoxLayout()
         self.add_workspace_button = QPushButton('添加工作目录')
+        self.notification_button = QPushButton('新提交通知')
         workspace_buttons_layout.addWidget(self.add_workspace_button)
+        workspace_buttons_layout.addWidget(self.notification_button)
         main_layout.addLayout(workspace_buttons_layout)
 
         self.workspace_tabs = QTabWidget()
@@ -85,6 +90,7 @@ class App(QWidget):
         self.setLayout(main_layout)
 
         self.add_workspace_button.clicked.connect(self.add_workspace)
+        self.notification_button.clicked.connect(self.show_commit_notifications)
 
         self.load_workspaces()
         self.apply_styles()
@@ -116,10 +122,15 @@ class App(QWidget):
                 self.save_config()
 
     def add_workspace_tab(self, name, path, workspace_config, make_current=True):
+        # 标准化路径为绝对路径
+        path = os.path.abspath(path)
         tab = WorkspaceTab(path, self.config, workspace_config, name)
         self.workspace_tabs.addTab(tab, name)
         if make_current:
             self.workspace_tabs.setCurrentWidget(tab)
+
+        # 启动 Git 监听，传递 workspace name
+        self.git_watcher.add_repository(path, name)
 
     def remove_workspace_tab(self, index):
         if index < 0:
@@ -129,11 +140,18 @@ class App(QWidget):
                                      f"您确定要移除工作区 '{tab_name}'吗？",
                                      QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply == QMessageBox.Yes:
+            tab_widget = self.workspace_tabs.widget(index)
+            if isinstance(tab_widget, WorkspaceTab):
+                # 停止 Git 监听
+                self.git_watcher.remove_repository(tab_widget.path)
+
             self.workspace_tabs.removeTab(index)
             self.save_config()
 
     def closeEvent(self, event):
         self.save_config()
+        # 停止所有 Git 监听
+        self.git_watcher.stop_all()
         event.accept()
 
     def on_workspace_tab_changed(self, index):
@@ -177,4 +195,14 @@ class App(QWidget):
 
     def apply_styles(self):
         apply_global_styles()
+
+    def show_commit_notifications(self):
+        """显示提交通知对话框"""
+        commits = self.git_watcher.get_commits()
+        dialog = CommitNotificationDialog(commits, self)
+        result = dialog.exec_()
+
+        # 如果用户在对话框中清空了记录，需要更新 watcher
+        if not dialog.commits:
+            self.git_watcher.clear_commits()
 
