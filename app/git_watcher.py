@@ -3,6 +3,7 @@ Git 仓库监听模块 - 监听 Git 仓库的提交变化
 """
 import os
 import subprocess
+import shelve
 from threading import Thread, Lock
 from typing import Dict, List, Callable, Optional
 from watchdog.observers import Observer
@@ -85,6 +86,8 @@ class GitEventHandler(FileSystemEventHandler):
 class GitWatcher:
     """Git 仓库监听器 - 管理多个仓库的监听"""
 
+    CACHE_KEY = 'git_commits_history'
+
     def __init__(self):
         self.observers: Dict[str, Observer] = {}
         self.commits: List[dict] = []
@@ -92,6 +95,7 @@ class GitWatcher:
         self.max_commits = 100  # 最多保存100条提交记录
         self.repo_workspace_names: Dict[str, str] = {}  # repo_path -> workspace_name 映射
         self.commit_listeners: List[callable] = []  # 新提交监听器列表
+        self._load_commits_from_cache()
 
     def add_commit_listener(self, callback: callable):
         """添加提交变化监听器"""
@@ -125,8 +129,29 @@ class GitWatcher:
             if len(self.commits) > self.max_commits:
                 self.commits = self.commits[:self.max_commits]
 
+        # 保存到缓存
+        self._save_commits_to_cache()
+
         # 通知所有监听器
         self._notify_commit_listeners()
+
+    def _load_commits_from_cache(self):
+        """从缓存加载提交历史"""
+        try:
+            with shelve.open('cache.db') as db:
+                cached_commits = db.get(self.CACHE_KEY, [])
+                # 只保留最近的 max_commits 条
+                self.commits = cached_commits[:self.max_commits] if cached_commits else []
+        except Exception:
+            self.commits = []
+
+    def _save_commits_to_cache(self):
+        """保存提交历史到缓存"""
+        try:
+            with shelve.open('cache.db', writeback=False) as db:
+                db[self.CACHE_KEY] = self.commits.copy()
+        except Exception:
+            pass
 
     def add_repository(self, repo_path: str, workspace_name: str) -> bool:
         """
@@ -194,6 +219,8 @@ class GitWatcher:
         """清空提交记录"""
         with self.lock:
             self.commits.clear()
+        # 同时清空缓存
+        self._save_commits_to_cache()
 
     def get_repo_name(self, repo_path: str) -> str:
         """获取仓库名称"""
