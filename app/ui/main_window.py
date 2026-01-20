@@ -221,6 +221,7 @@ class App(QWidget):
         for request in requests:
             try:
                 from app.ui.create_mr_dialog import CreateMRDialog
+                from PyQt5.QtCore import Qt
                 dialog = CreateMRDialog(
                     repo_path=request.repo_path,
                     workspace_name=request.workspace_name,
@@ -228,6 +229,11 @@ class App(QWidget):
                     source_branch=request.branch,
                     parent=self
                 )
+                # 设置为工具窗口，打开时置顶
+                dialog.setWindowFlags(dialog.windowFlags() | Qt.Tool)
+                dialog.show()
+                dialog.raise_()
+                dialog.activateWindow()
                 dialog.exec_()
             except Exception as e:
                 QMessageBox.warning(self, '错误', f'打开创建 MR 对话框失败: {e}')

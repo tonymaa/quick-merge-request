@@ -328,13 +328,11 @@ class GitWatcher:
                     print(f"[DEBUG] 匹配到 view_details，main_window: {self.main_window}")
                     if self.main_window:
                         print(f"[DEBUG] 准备调用 show_commit_notifications")
-                        # 必须在主线程中执行 UI 操作，使用 QMetaObject.invokeMethod
-                        from PyQt5.QtCore import QMetaObject, Qt, QCoreApplication
-
+                        # 必须在主线程中执行 UI 操作，使用 QTimer 切换线程
+                        from PyQt5.QtCore import QTimer, QCoreApplication                        # 确保在主线程中执行
                         app = QCoreApplication.instance()
                         if app:
-                            # 使用 invokeMethod 在主线程中执行
-                            QMetaObject.invokeMethod(self.main_window, 'show_commit_notifications', Qt.QueuedConnection)
+                            QTimer.singleShot(0, self.main_window.show_commit_notifications)
                             print(f"[DEBUG] 已调度 show_commit_notifications 到主线程")
                         else:
                             print(f"[DEBUG] 错误: 无法获取 QCoreApplication 实例")
