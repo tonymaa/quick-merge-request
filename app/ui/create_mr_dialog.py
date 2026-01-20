@@ -87,7 +87,7 @@ class CreateMRDialog(QDialog):
         self.show_all_branches_checkbox.setChecked(True)
 
         source_branch_layout = QHBoxLayout()
-        source_branch_layout.addWidget(self.source_branch_combo)
+        source_branch_layout.addWidget(self.source_branch_combo, 1)
         source_branch_layout.addWidget(self.refresh_branches_button)
         source_branch_layout.addWidget(self.show_all_branches_checkbox)
         form_layout.addRow('源分支:', source_branch_layout)
@@ -97,7 +97,7 @@ class CreateMRDialog(QDialog):
         self.refresh_mr_target_branches_button = QPushButton('刷新远程分支')
 
         target_branch_layout = QHBoxLayout()
-        target_branch_layout.addWidget(self.mr_target_branch_combo)
+        target_branch_layout.addWidget(self.mr_target_branch_combo, 1)
         target_branch_layout.addWidget(self.refresh_mr_target_branches_button)
         form_layout.addRow('目标分支:', target_branch_layout)
 
