@@ -1,10 +1,13 @@
 import os
 import xml.etree.ElementTree as ET
 from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtWidgets import QApplication
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QPushButton, QFileDialog,
     QLabel, QInputDialog, QMessageBox, QMenu
 )
+from PyQt5.QtGui import QIcon, QPainter, QColor
+from PyQt5.QtWidgets import QSystemTrayIcon
 from app.styles import apply_global_styles
 from app.ui.workspace_tab import WorkspaceTab
 from app.ui.commit_notification_dialog import CommitNotificationDialog
@@ -22,7 +25,9 @@ class App(QWidget):
         self.git_watcher = get_global_watcher()
         # 设置主窗口引用，用于通知按钮点击时打开对话框
         self.git_watcher.set_main_window(self)
+        self.tray_icon = None
         self.initUI()
+        self.init_system_tray()
         # 启动定时器检查待处理的创建 MR 请求
         self._start_pending_mr_checker()
 
@@ -153,13 +158,40 @@ class App(QWidget):
             self.save_config()
 
     def closeEvent(self, event):
-        self.save_config()
-        # 停止定时器
-        if hasattr(self, '_pending_mr_timer'):
-            self._pending_mr_timer.stop()
-        # 停止所有 Git 监听
-        self.git_watcher.stop_all()
-        event.accept()
+        """关闭窗口事件 - 显示选择对话框"""
+        if self.tray_icon and self.tray_icon.isVisible():
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle('关闭窗口')
+            msg_box.setText('您希望如何操作？')
+
+            minimize_btn = msg_box.addButton("最小化到托盘", QMessageBox.YesRole)
+            quit_btn = msg_box.addButton("退出程序", QMessageBox.NoRole)
+            cancel_btn = msg_box.addButton("取消", QMessageBox.RejectRole)
+
+            msg_box.setDefaultButton(minimize_btn)
+            msg_box.exec_()
+
+            if msg_box.clickedButton() == minimize_btn:
+                # 最小化到托盘
+                event.ignore()
+                self.hide()
+                self.tray_icon.showMessage(
+                    self.title,
+                    "程序已最小化到系统托盘",
+                    QSystemTrayIcon.Information,
+                    2000
+                )
+            elif msg_box.clickedButton() == quit_btn:
+                # 退出程序
+                self.quit_app()
+                event.accept()
+            else:
+                # 取消
+                event.ignore()
+        else:
+            # 没有托盘支持，直接退出
+            self.quit_app()
+            event.accept()
 
     def on_workspace_tab_changed(self, index):
         w = self.workspace_tabs.widget(index)
@@ -202,6 +234,72 @@ class App(QWidget):
 
     def apply_styles(self):
         apply_global_styles()
+
+    def create_tray_icon(self):
+        """创建托盘图标"""
+        pixmap = QIcon()
+        # 创建一个简单的图标
+        from PyQt5.QtGui import QPixmap
+        from PyQt5.QtCore import QSize
+        size = 32
+        px = QPixmap(size, size)
+        px.fill(Qt.transparent)
+        painter = QPainter(px)
+        painter.setRenderHint(QPainter.Antialiasing)
+        # 绘制圆形背景
+        painter.setBrush(QColor("#FC6D26"))  # GitLab 橙色
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(0, 0, size, size)
+        # 绘制 "G" 字
+        painter.setPen(QColor("#FFFFFF"))
+        font = painter.font()
+        font.setPixelSize(20)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.drawText(px.rect(), Qt.AlignCenter, "G")
+        painter.end()
+        return QIcon(px)
+
+    def init_system_tray(self):
+        """初始化系统托盘"""
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+
+        self.tray_icon = QSystemTrayIcon(self.create_tray_icon(), self)
+        self.tray_icon.setToolTip(self.title)
+
+        # 创建托盘菜单
+        tray_menu = QMenu()
+        show_action = tray_menu.addAction("显示窗口")
+        show_action.triggered.connect(self.show_window)
+        quit_action = tray_menu.addAction("退出程序")
+        quit_action.triggered.connect(self.quit_app)
+
+        self.tray_icon.setContextMenu(tray_menu)
+
+        # 左键点击恢复窗口
+        self.tray_icon.activated.connect(self.on_tray_icon_activated)
+
+        self.tray_icon.show()
+
+    def on_tray_icon_activated(self, reason):
+        """托盘图标被点击时的处理"""
+        if reason == QSystemTrayIcon.Trigger:  # 左键点击
+            self.show_window()
+
+    def show_window(self):
+        """显示主窗口"""
+        self.showNormal()
+        self.activateWindow()
+        self.raise_()
+
+    def quit_app(self):
+        """完全退出程序"""
+        self.save_config()
+        if hasattr(self, '_pending_mr_timer'):
+            self._pending_mr_timer.stop()
+        self.git_watcher.stop_all()
+        QApplication.instance().quit()
 
     def _start_pending_mr_checker(self):
         """启动定时器检查待处理的创建 MR 请求"""
