@@ -320,6 +320,11 @@ class App(QWidget):
             try:
                 from app.ui.create_mr_dialog import CreateMRDialog
                 from PyQt5.QtCore import Qt
+                # 如果主窗口隐藏，先显示主窗口以避免对话框关闭时程序退出
+                was_hidden = self.isHidden()
+                if was_hidden:
+                    self.show()
+
                 dialog = CreateMRDialog(
                     repo_path=request.repo_path,
                     workspace_name=request.workspace_name,
@@ -333,11 +338,20 @@ class App(QWidget):
                 dialog.raise_()
                 dialog.activateWindow()
                 dialog.exec_()
+
+                # 如果之前是隐藏的，再次隐藏
+                if was_hidden:
+                    self.hide()
             except Exception as e:
                 QMessageBox.warning(self, '错误', f'打开创建 MR 对话框失败: {e}')
 
     def show_commit_notifications(self):
         """显示提交通知对话框"""
+        # 如果主窗口隐藏，先显示主窗口以避免对话框关闭时程序退出
+        was_hidden = self.isHidden()
+        if was_hidden:
+            self.show()
+
         # 直接传递 watcher 的 commits 列表的引用，而不是副本
         dialog = CommitNotificationDialog(self.git_watcher.commits, self)
         # 设置为工具窗口，打开时置顶
@@ -346,6 +360,10 @@ class App(QWidget):
         dialog.raise_()
         dialog.activateWindow()
         result = dialog.exec_()
+
+        # 如果之前是隐藏的，再次隐藏
+        if was_hidden:
+            self.hide()
 
         # 如果用户在对话框中清空了记录，需要更新 watcher
         if not self.git_watcher.commits:
