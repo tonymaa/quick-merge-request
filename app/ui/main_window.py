@@ -1,6 +1,6 @@
 import os
 import xml.etree.ElementTree as ET
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QPushButton, QFileDialog,
     QLabel, QInputDialog, QMessageBox, QMenu
@@ -23,6 +23,8 @@ class App(QWidget):
         # 设置主窗口引用，用于通知按钮点击时打开对话框
         self.git_watcher.set_main_window(self)
         self.initUI()
+        # 启动定时器检查待处理的创建 MR 请求
+        self._start_pending_mr_checker()
 
     def load_config(self):
         try:
@@ -152,6 +154,9 @@ class App(QWidget):
 
     def closeEvent(self, event):
         self.save_config()
+        # 停止定时器
+        if hasattr(self, '_pending_mr_timer'):
+            self._pending_mr_timer.stop()
         # 停止所有 Git 监听
         self.git_watcher.stop_all()
         event.accept()
@@ -197,6 +202,35 @@ class App(QWidget):
 
     def apply_styles(self):
         apply_global_styles()
+
+    def _start_pending_mr_checker(self):
+        """启动定时器检查待处理的创建 MR 请求"""
+        self._pending_mr_timer = QTimer(self)
+        self._pending_mr_timer.timeout.connect(self._check_pending_mr_requests)
+        self._pending_mr_timer.start(500)  # 每 500ms 检查一次
+
+    def _check_pending_mr_requests(self):
+        """检查并处理待处理的创建 MR 请求"""
+        if not self.git_watcher.pending_create_mr_requests:
+            return
+
+        # 取出所有待处理的请求
+        requests = self.git_watcher.pending_create_mr_requests[:]
+        self.git_watcher.pending_create_mr_requests.clear()
+
+        for request in requests:
+            try:
+                from app.ui.create_mr_dialog import CreateMRDialog
+                dialog = CreateMRDialog(
+                    repo_path=request.repo_path,
+                    workspace_name=request.workspace_name,
+                    config=self.config,
+                    source_branch=request.branch,
+                    parent=self
+                )
+                dialog.exec_()
+            except Exception as e:
+                QMessageBox.warning(self, '错误', f'打开创建 MR 对话框失败: {e}')
 
     def show_commit_notifications(self):
         """显示提交通知对话框"""

@@ -10,6 +10,14 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler, FileModifiedEvent
 
 
+class CreateMRRequest:
+    """创建 MR 请求"""
+    def __init__(self, repo_path: str, branch: str, workspace_name: str):
+        self.repo_path = repo_path
+        self.branch = branch
+        self.workspace_name = workspace_name
+
+
 class GitEventHandler(FileSystemEventHandler):
     """Git 文件变化事件处理器"""
 
@@ -97,6 +105,7 @@ class GitWatcher:
         self.commit_listeners: List[callable] = []  # 新提交监听器列表
         self.initial_commit_count = 0  # 记录初始化时的提交数量，用于检测新提交
         self.main_window = None  # 主窗口引用，用于打开通知对话框
+        self.pending_create_mr_requests: List[CreateMRRequest] = []  # 待处理的创建 MR 请求
         self._load_commits_from_cache()
         self.initial_commit_count = len(self.commits)
 
@@ -295,9 +304,9 @@ class GitWatcher:
 
             newToast.text_fields = [title, message]
 
-            # 添加按钮 - 点击后打开通知对话框
-            # 使用 'view_details' 作为标识符
+            # 添加按钮 - 点击后打开通知对话框或创建 MR
             newToast.AddAction(ToastButton('查看详情', 'view_details'))
+            newToast.AddAction(ToastButton('创建MR', 'create_mr'))
 
             # 处理通知激活事件（按钮点击或通知本身被点击）
             # 将回调保存为实例属性，避免被垃圾回收
@@ -305,7 +314,6 @@ class GitWatcher:
                 """通知被激活时的回调"""
                 print(f"[DEBUG] 通知被触发，event_args: {event_args}")
                 print(f"[DEBUG] event_args 类型: {type(event_args)}")
-                print(f"[DEBUG] event_args 属性: {dir(event_args)}")
 
                 # 检查是否点击了按钮
                 args = None
@@ -316,25 +324,46 @@ class GitWatcher:
                     args = event_args.input
                     print(f"[DEBUG] input: {args}")
 
-                # 打印所有可能的属性
-                for attr in ['arguments', 'input', 'argument', 'value']:
-                    if hasattr(event_args, attr):
-                        print(f"[DEBUG] event_args.{attr} = {getattr(event_args, attr)}")
-
                 if args == 'view_details':
                     print(f"[DEBUG] 匹配到 view_details，main_window: {self.main_window}")
                     if self.main_window:
                         print(f"[DEBUG] 准备调用 show_commit_notifications")
-                        # 必须在主线程中执行 UI 操作，使用 QTimer 切换线程
-                        from PyQt5.QtCore import QTimer, QCoreApplication
+                        # 必须在主线程中执行 UI 操作，使用 QMetaObject.invokeMethod
+                        from PyQt5.QtCore import QMetaObject, Qt, QCoreApplication
 
-                        # 确保在主线程中执行
                         app = QCoreApplication.instance()
                         if app:
-                            QTimer.singleShot(0, self.main_window.show_commit_notifications)
+                            # 使用 invokeMethod 在主线程中执行
+                            QMetaObject.invokeMethod(self.main_window, 'show_commit_notifications', Qt.QueuedConnection)
                             print(f"[DEBUG] 已调度 show_commit_notifications 到主线程")
                         else:
                             print(f"[DEBUG] 错误: 无法获取 QCoreApplication 实例")
+
+                elif args == 'create_mr':
+                    print(f"[DEBUG] 匹配到 create_mr，main_window: {self.main_window}")
+                    if self.main_window:
+                        print(f"[DEBUG] 准备创建 MR")
+
+                        # 获取 commit 信息
+                        repo_path = commit.get('repo_path')
+                        branch = commit.get('branch')
+                        workspace_name = commit.get('repo', '')
+
+                        print(f"[DEBUG] repo_path: {repo_path}, branch: {branch}, workspace_name: {workspace_name}")
+
+                        # 验证参数
+                        if not repo_path:
+                            print(f"[DEBUG] 错误: 缺少仓库路径信息")
+                            return
+
+                        if not branch or branch == 'HEAD':
+                            print(f"[DEBUG] 错误: 不在任何分支上")
+                            return
+
+                        # 将请求添加到队列，由主窗口处理
+                        request = CreateMRRequest(repo_path, branch, workspace_name)
+                        self.pending_create_mr_requests.append(request)
+                        print(f"[DEBUG] 已将创建 MR 请求添加到队列，队列长度: {len(self.pending_create_mr_requests)}")
 
             newToast.on_activated = on_activated
             # 保存回调引用，防止被垃圾回收
