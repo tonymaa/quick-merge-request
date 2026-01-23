@@ -145,11 +145,16 @@ class GitWatcher:
 
     def _on_new_commit(self, commit_info: dict):
         """新提交回调"""
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print(f"[{timestamp}] [GitWatcher] 检测到新提交: {commit_info.get('message', '')[:30]}... (hash: {commit_info.get('hash', '')[:8]})")
+
         is_new_commit = False
         with self.lock:
             # 避免重复记录
             for existing in self.commits:
                 if existing.get('hash') == commit_info.get('hash'):
+                    print(f"[{timestamp}] [GitWatcher] 提交已存在，跳过")
                     return
             self.commits.insert(0, commit_info)
             # 限制记录数量
@@ -157,9 +162,11 @@ class GitWatcher:
                 self.commits = self.commits[:self.max_commits]
             # 判断是否是真正的新提交（非缓存加载的）
             is_new_commit = len(self.commits) > self.initial_commit_count
+            print(f"[{timestamp}] [GitWatcher] is_new_commit={is_new_commit}, initial_count={self.initial_commit_count}, current_count={len(self.commits)}")
+
             # 如果是真正的新提交（非缓存加载），显示系统通知
-            print(is_new_commit)
             if is_new_commit and self.commits:
+                print(f"[{timestamp}] [GitWatcher] 准备显示系统通知...")
                 self._show_system_notification(self.commits[0])
 
         # 保存到缓存
@@ -271,6 +278,9 @@ class GitWatcher:
 
     def _show_system_notification(self, commit: Dict):
         """显示 Windows 系统通知（带按钮）"""
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
         # 优先尝试使用 windows_toast（支持按钮）
         try:
             from windows_toasts import InteractableWindowsToaster, Toast, ToastButton
@@ -286,13 +296,31 @@ class GitWatcher:
                 self._main_thread_id = current_thread_id
                 main_thread_id = current_thread_id
 
+            print(f"[{timestamp}] [Notification] 线程检查 - current: {current_thread_id}, main: {main_thread_id}")
+
             if current_thread_id != main_thread_id:
-                # 不在主线程，使用 QTimer 切换到主线程执行
+                # 不在主线程，使用信号/槽机制切换到主线程执行
+                print(f"[{timestamp}] [Notification] 不在主线程，尝试切换到主线程...")
+
+                # 使用主窗口的信号机制来切换线程
+                # 在主窗口对象上创建一个临时方法，通过 invokeMethod 调用
                 if self.main_window:
-                    from PyQt5.QtCore import QTimer
-                    # 延迟执行，避免阻塞
-                    QTimer.singleShot(100, lambda c=commit: self._show_system_notification(c))
+                    from PyQt5.QtCore import QMetaObject, Qt
+
+                    # 保存 commit 到实例变量，避免参数传递问题
+                    self._pending_notification_commit = commit
+
+                    # 使用 invokeMethod 在主窗口的线程（主线程）中执行方法
+                    QMetaObject.invokeMethod(
+                        self.main_window,
+                        "show_notification_from_watcher",
+                        Qt.QueuedConnection
+                    )
                     return
+                else:
+                    print(f"[{timestamp}] [Notification] 错误: main_window 为 None，无法切换到主线程！")
+                    # 即使没有 main_window，仍然尝试显示通知（只是按钮功能可能不可用）
+                    pass
 
             # 使用 InteractableWindowsToaster 以支持按钮
             toaster = InteractableWindowsToaster('GitLab 快捷工具')
@@ -368,30 +396,37 @@ class GitWatcher:
             self._toast_callback = newToast.on_activated
 
             # 显示通知（不需要线程，windows_toasts 内部处理异步）
+            print(f"[{timestamp}] [Notification] 调用 toaster.show_toast...")
             toaster.show_toast(newToast)
+            print(f"[{timestamp}] [Notification] 通知已发送")
             return
         except ImportError:
             # windows_toast 未安装，尝试降级方案
-            pass
-        except Exception:
+            print(f"[{timestamp}] [Notification] windows_toasts 未安装，尝试降级方案")
+            self._show_fallback_notification(commit)
+        except Exception as e:
             # 其他错误，尝试降级方案
             import traceback
+            print(f"[{timestamp}] [Notification] windows_toasts 抛出异常: {e}")
             traceback.print_exc()  # 打印错误信息用于调试
-
-        # 降级方案：使用 win10toast
-        self._show_fallback_notification(commit)
+            self._show_fallback_notification(commit)
 
     def _show_fallback_notification(self, commit: Dict):
         """降级方案：使用 win10toast 显示通知（不支持按钮）"""
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
         try:
             from win10toast import ToastNotifier
             toaster = ToastNotifier()
+            print(f"[{timestamp}] [Notification] 使用 win10toast 降级方案显示通知")
 
             # 在后台线程中显示通知，避免阻塞 UI
             def show_toast():
                 try:
                     title = f"新提交检测 - {commit.get('repo', 'Unknown')}"
                     message = f"{commit.get('message', 'No message')[:50]}\n作者: {commit.get('author', 'Unknown')}"
+                    print(f"[{timestamp}] [Notification] win10toast 显示: {title}")
                     # 显示通知，持续5秒
                     toaster.show_toast(
                         title,
@@ -400,17 +435,21 @@ class GitWatcher:
                         duration=5,
                         threaded=True
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    import traceback
+                    print(f"[{timestamp}] [Notification] win10toast 内部异常: {e}")
+                    traceback.print_exc()
 
             # 在单独的线程中执行，避免阻塞
             thread = Thread(target=show_toast, daemon=True)
             thread.start()
         except ImportError:
             # win10toast 也未安装，静默忽略
-            pass
-        except Exception:
-            pass
+            print(f"[{timestamp}] [Notification] win10toast 未安装，无法显示通知")
+        except Exception as e:
+            import traceback
+            print(f"[{timestamp}] [Notification] win10toast 初始化异常: {e}")
+            traceback.print_exc()
 
 
 # 全局单例

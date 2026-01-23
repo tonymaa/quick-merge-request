@@ -369,3 +369,19 @@ class App(QWidget):
         if not self.git_watcher.commits:
             self.git_watcher.clear_commits()
 
+    def show_notification_from_watcher(self):
+        """从 GitWatcher 调用的方法，用于在主线程中显示系统通知"""
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print(f"[{timestamp}] [MainWindow] show_notification_from_watcher 被调用")
+
+        # 从 watcher 中获取待显示的 commit
+        commit = getattr(self.git_watcher, '_pending_notification_commit', None)
+        if commit:
+            # 调用 watcher 的通知方法，现在在主线程中执行
+            self.git_watcher._show_system_notification(commit)
+            # 清除临时保存的 commit
+            self.git_watcher._pending_notification_commit = None
+        else:
+            print(f"[{timestamp}] [MainWindow] 警告: _pending_notification_commit 为 None")
+
