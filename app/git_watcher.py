@@ -103,11 +103,12 @@ class GitWatcher:
         self.max_commits = 100  # 最多保存100条提交记录
         self.repo_workspace_names: Dict[str, str] = {}  # repo_path -> workspace_name 映射
         self.commit_listeners: List[callable] = []  # 新提交监听器列表
-        self.initial_commit_count = 0  # 记录初始化时的提交数量，用于检测新提交
+        self.cached_commit_hashes: set = set()  # 缓存中已存在的提交哈希集合，用于检测新提交
         self.main_window = None  # 主窗口引用，用于打开通知对话框
         self.pending_create_mr_requests: List[CreateMRRequest] = []  # 待处理的创建 MR 请求
         self._load_commits_from_cache()
-        self.initial_commit_count = len(self.commits)
+        # 记录缓存中已有的提交哈希，用于判断是否是新提交
+        self.cached_commit_hashes = {c.get('hash') for c in self.commits if c.get('hash')}
 
     def set_main_window(self, main_window):
         """设置主窗口引用，用于通知按钮点击时打开对话框"""
@@ -156,13 +157,19 @@ class GitWatcher:
                 if existing.get('hash') == commit_info.get('hash'):
                     print(f"[{timestamp}] [GitWatcher] 提交已存在，跳过")
                     return
+
+            # 判断是否是真正的新提交（不在原始缓存中）
+            is_new_commit = commit_info.get('hash') not in self.cached_commit_hashes
+
             self.commits.insert(0, commit_info)
             # 限制记录数量
             if len(self.commits) > self.max_commits:
                 self.commits = self.commits[:self.max_commits]
-            # 判断是否是真正的新提交（非缓存加载的）
-            is_new_commit = len(self.commits) > self.initial_commit_count
-            print(f"[{timestamp}] [GitWatcher] is_new_commit={is_new_commit}, initial_count={self.initial_commit_count}, current_count={len(self.commits)}")
+                # 截断后更新 cached_commit_hashes，避免内存无限增长
+                current_hashes = {c.get('hash') for c in self.commits if c.get('hash')}
+                self.cached_commit_hashes = current_hashes
+
+            print(f"[{timestamp}] [GitWatcher] is_new_commit={is_new_commit}, cached_count={len(self.cached_commit_hashes)}, current_count={len(self.commits)}")
 
             # 如果是真正的新提交（非缓存加载），显示系统通知
             if is_new_commit and self.commits:
