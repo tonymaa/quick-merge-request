@@ -1,11 +1,13 @@
 import shelve
+import time
 import xml.etree.ElementTree as ET
 from PyQt5.QtWidgets import (
     QCheckBox,
     QWidget, QTabWidget, QFormLayout, QLineEdit, QHBoxLayout, QPushButton,
-    QVBoxLayout, QListWidget, QAbstractItemView, QTextEdit, QComboBox, QMessageBox, QDialog
+    QVBoxLayout, QListWidget, QAbstractItemView, QTextEdit, QComboBox, QMessageBox, QDialog,
+    QFrame, QSizePolicy, QTableWidget, QTableWidgetItem, QDialogButtonBox, QHeaderView
 )
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
 from PyQt5.QtWidgets import QApplication
 
 from app.async_utils import run_blocking
@@ -19,7 +21,434 @@ from app.widgets import NoWheelComboBox, enable_combo_search as util_enable_comb
 from PyQt5.QtWidgets import QScrollArea, QLabel
 from app.ui.commit_diff_dialog import CommitDiffDialog
 
+
+class CollapsibleConsole(QWidget):
+    """可折叠的控制台日志区"""
+
+    def __init__(self, title='控制台日志', parent=None):
+        super().__init__(parent)
+        self.is_expanded = True
+        self.title = title
+        self.setup_ui()
+
+    def setup_ui(self):
+        self.main_layout = QVBoxLayout()
+        self.main_layout.setContentsMargins(0, 0, 0, 0)
+        self.main_layout.setSpacing(0)
+
+        # 标题栏（可点击）
+        self.header = QPushButton(f'▼ {self.title}')
+        self.header.setStyleSheet('''
+            QPushButton {
+                background: #34495e;
+                color: white;
+                border: none;
+                border-radius: 4px 4px 0 0;
+                padding: 8px 12px;
+                text-align: left;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background: #2c3e50;
+            }
+        ''')
+        self.header.clicked.connect(self.toggle)
+        self.main_layout.addWidget(self.header)
+
+        # 内容区域
+        self.content_widget = QWidget()
+        self.content_layout = QVBoxLayout()
+        self.content_layout.setContentsMargins(0, 0, 0, 0)
+
+        # 日志文本框
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setStyleSheet('''
+            QTextEdit {
+                background: #1e1e1e;
+                color: #d4d4d4;
+                border: 1px solid #34495e;
+                border-top: none;
+                border-radius: 0 0 4px 4px;
+                font-family: Consolas, Monaco, monospace;
+                font-size: 12px;
+                padding: 8px;
+            }
+        ''')
+        self.content_layout.addWidget(self.log_text)
+
+        self.content_widget.setLayout(self.content_layout)
+        self.main_layout.addWidget(self.content_widget)
+
+        self.setLayout(self.main_layout)
+
+    def toggle(self):
+        """切换展开/折叠状态"""
+        self.is_expanded = not self.is_expanded
+        self.content_widget.setVisible(self.is_expanded)
+        if self.is_expanded:
+            self.header.setText(f'▼ {self.title}')
+        else:
+            self.header.setText(f'▶ {self.title}')
+
+    def append(self, text):
+        """追加日志文本"""
+        self.log_text.setPlainText(self.log_text.toPlainText() + text + '\n')
+        # 滚动到底部
+        cursor = self.log_text.textCursor()
+        cursor.movePosition(cursor.End)
+        self.log_text.setTextCursor(cursor)
+
+    def clear(self):
+        """清空日志"""
+        self.log_text.clear()
+
+    def get_text(self):
+        """获取日志文本"""
+        return self.log_text.toPlainText()
+
+    def set_text(self, text):
+        """设置日志文本"""
+        self.log_text.setPlainText(text)
+
+
+class CherryPickConfirmDialog(QDialog):
+    """Cherry-Pick 二阶段确认对话框，支持显示执行日志"""
+
+    def __init__(self, source_branch, target_branch, commits, workspace_tab, parent=None):
+        super().__init__(parent)
+        self.source_branch = source_branch
+        self.target_branch = target_branch
+        self.commits = commits
+        self.workspace_tab = workspace_tab
+        self.is_executing = False
+        self.cherry_pick_current_index = 0
+        self.cherry_pick_successful = 0
+        self.cherry_pick_worktree_dir = None
+
+        self.setWindowTitle('确认 Cherry-Pick 操作')
+        self.setMinimumWidth(700)
+        self.setMinimumHeight(500)
+        self.setup_ui()
+
+    def setup_ui(self):
+        self.main_layout = QVBoxLayout()
+        self.main_layout.setSpacing(15)
+
+        # 标题区域
+        self.title_label = QLabel('<b>即将执行 Cherry-Pick 操作</b>')
+        self.title_label.setStyleSheet('font-size: 16px; color: #2c3e50;')
+        self.main_layout.addWidget(self.title_label)
+
+        # 分支信息区域
+        self.info_frame = QFrame()
+        self.info_frame.setStyleSheet('''
+            QFrame {
+                background: #f8f9fa;
+                border: 1px solid #e9ecef;
+                border-radius: 6px;
+                padding: 10px;
+            }
+        ''')
+        info_layout = QVBoxLayout(self.info_frame)
+
+        # 源分支 -> 目标分支（带箭头）
+        branch_row = QHBoxLayout()
+        source_label = QLabel(f'<b>源分支:</b> {self.source_branch}')
+        source_label.setStyleSheet('color: #3498db;')
+        arrow_label = QLabel('→')
+        arrow_label.setStyleSheet('font-size: 18px; color: #27ae60; font-weight: bold;')
+        target_label = QLabel(f'<b>目标分支:</b> {self.target_branch}')
+        target_label.setStyleSheet('color: #27ae60;')
+
+        branch_row.addWidget(source_label)
+        branch_row.addStretch()
+        branch_row.addWidget(arrow_label)
+        branch_row.addStretch()
+        branch_row.addWidget(target_label)
+        info_layout.addLayout(branch_row)
+
+        commit_count = QLabel(f'<b>提交数量:</b> {len(self.commits)} 个')
+        info_layout.addWidget(commit_count)
+
+        self.main_layout.addWidget(self.info_frame)
+
+        # 提交列表表格
+        table_label = QLabel('<b>选中的提交:</b>')
+        self.main_layout.addWidget(table_label)
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(3)
+        self.table.setHorizontalHeaderLabels(['Hash', '提交信息', '作者'])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Fixed)
+        self.table.setColumnWidth(0, 80)
+        self.table.setColumnWidth(2, 120)
+        self.table.setRowCount(len(self.commits))
+        self.table.setAlternatingRowColors(True)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+
+        for row, commit in enumerate(self.commits):
+            hash_item = QTableWidgetItem(commit['hash'][:8])
+            hash_item.setForeground(Qt.blue)
+            self.table.setItem(row, 0, hash_item)
+
+            message_item = QTableWidgetItem(commit['message'][:60] + ('...' if len(commit['message']) > 60 else ''))
+            self.table.setItem(row, 1, message_item)
+
+            author_item = QTableWidgetItem(commit.get('author', 'Unknown'))
+            self.table.setItem(row, 2, author_item)
+
+        self.main_layout.addWidget(self.table)
+
+        # 警告提示
+        self.warning_label = QLabel('⚠️ 此操作将在目标分支上应用选中的提交。请确认操作无误。')
+        self.warning_label.setStyleSheet('color: #f39c12; padding: 10px; background: #fff3cd; border-radius: 4px;')
+        self.main_layout.addWidget(self.warning_label)
+
+        # 控制台日志区域（初始隐藏）
+        self.console = CollapsibleConsole('Cherry-Pick 执行日志')
+        self.console.setMinimumHeight(200)
+        self.console.setVisible(False)
+        self.main_layout.addWidget(self.console)
+
+        # 按钮区域
+        self.button_box = QDialogButtonBox(QDialogButtonBox.Yes | QDialogButtonBox.No)
+        self.confirm_button = self.button_box.button(QDialogButtonBox.Yes)
+        self.cancel_button = self.button_box.button(QDialogButtonBox.No)
+        self.confirm_button.setText('确认执行')
+        self.cancel_button.setText('取消')
+        self.confirm_button.setStyleSheet('''
+            QPushButton {
+                background: #27ae60;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 20px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background: #2ecc71;
+            }
+        ''')
+        self.cancel_button.setStyleSheet('''
+            QPushButton {
+                background: #e74c3c;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 20px;
+            }
+            QPushButton:hover {
+                background: #c0392b;
+            }
+        ''')
+        self.button_box.accepted.connect(self.start_execution)
+        self.button_box.rejected.connect(self.reject)
+        self.main_layout.addWidget(self.button_box)
+
+        self.setLayout(self.main_layout)
+
+    def append_log(self, text):
+        """追加日志文本"""
+        self.console.append(text)
+        QApplication.processEvents()
+
+    def start_execution(self):
+        """开始执行 cherry-pick"""
+        import subprocess
+        import tempfile
+        import shutil
+
+        # 切换到执行模式
+        self.is_executing = True
+        self.title_label.setText('<b>正在执行 Cherry-Pick 操作</b>')
+        self.title_label.setStyleSheet('font-size: 16px; color: #27ae60;')
+        self.warning_label.setVisible(False)
+        self.table.setVisible(False)
+        self.console.setVisible(True)
+
+        # 禁用按钮
+        self.confirm_button.setEnabled(False)
+        self.cancel_button.setText('关闭')
+
+        # 开始执行
+        self.cherry_pick_current_index = 0
+        self.cherry_pick_successful = 0
+
+        # 创建临时 worktree 目录
+        temp_dir = tempfile.mkdtemp(prefix='cherry-pick-')
+        self.cherry_pick_worktree_dir = temp_dir
+
+        self.append_log(f'--- 创建临时 worktree: {temp_dir} ---')
+
+        # 检查目标分支是否存在于本地
+        self.append_log(f'--- 检查目标分支: {self.target_branch} ---')
+        local_branch_check = subprocess.run(
+            ['git', 'branch', '--list', self.target_branch],
+            cwd=self.workspace_tab.path,
+            capture_output=True,
+            text=True
+        )
+
+        # 检查目标分支是否存在于远程
+        remote_branch_check = subprocess.run(
+            ['git', 'branch', '-r', '--list', f'origin/{self.target_branch}'],
+            cwd=self.workspace_tab.path,
+            capture_output=True,
+            text=True
+        )
+
+        # 确定使用哪个命令创建 worktree
+        worktree_cmd = ['git', 'worktree', 'add', '-f', temp_dir]
+
+        if local_branch_check.returncode == 0 and local_branch_check.stdout.strip():
+            worktree_cmd.append(self.target_branch)
+            self.append_log(f'使用本地分支: {self.target_branch}\n')
+        elif remote_branch_check.returncode == 0 and remote_branch_check.stdout.strip():
+            worktree_cmd.extend(['-b', self.target_branch, f'origin/{self.target_branch}'])
+            self.append_log(f'从远程创建分支: origin/{self.target_branch}\n')
+        else:
+            worktree_cmd.append(self.target_branch)
+            self.append_log(f'尝试使用分支: {self.target_branch}\n')
+
+        worktree_result = subprocess.run(
+            worktree_cmd,
+            cwd=self.workspace_tab.path,
+            capture_output=True,
+            text=True
+        )
+
+        self.append_log(f'STDOUT:\n{worktree_result.stdout}')
+        if worktree_result.stderr:
+            self.append_log(f'STDERR:\n{worktree_result.stderr}')
+
+        if worktree_result.returncode != 0:
+            self.append_log(f'\n创建 worktree 失败！错误代码: {worktree_result.returncode}')
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            self.finish_execution(False)
+            return
+
+        # 验证 worktree 中的分支
+        verify_result = subprocess.run(
+            ['git', 'branch', '--show-current'],
+            cwd=temp_dir,
+            capture_output=True,
+            text=True
+        )
+        current_branch = verify_result.stdout.strip()
+        self.append_log(f'Worktree 当前分支: {current_branch}\n')
+
+        # 开始逐个执行 cherry-pick
+        self.cherry_pick_next_commit()
+
+    def cherry_pick_next_commit(self):
+        """执行下一个 cherry-pick"""
+        import subprocess
+        import shutil
+
+        if self.cherry_pick_current_index >= len(self.commits):
+            # 全部完成，执行 push 和清理
+            self.append_log(f'\n--- 完成！成功 cherry-pick 了 {self.cherry_pick_successful} 个提交 ---')
+
+            # 执行 git push
+            self.append_log(f'\n--- 正在推送到远程仓库 ---')
+            push_result = subprocess.run(
+                ['git', 'push', '-u', 'origin', self.target_branch],
+                cwd=self.cherry_pick_worktree_dir,
+                capture_output=True,
+                text=True
+            )
+            self.append_log(f'STDOUT:\n{push_result.stdout}')
+            if push_result.stderr:
+                self.append_log(f'STDERR:\n{push_result.stderr}')
+
+            if push_result.returncode == 0:
+                self.append_log(f'\n--- 推送成功！---')
+                self.finish_execution(True)
+            else:
+                self.append_log(f'\n--- 推送失败！错误代码: {push_result.returncode} ---')
+                self.finish_execution(False)
+
+            # 清理 worktree
+            self.cleanup_worktree()
+            return
+
+        commit = self.commits[self.cherry_pick_current_index]
+        commit_hash = commit['hash']
+        commit_msg = commit['message'][:50]
+
+        self.append_log(f'--- Cherry-pick ({self.cherry_pick_current_index + 1}/{len(self.commits)}): {commit_hash[:8]} - {commit_msg} ---')
+
+        # 在 worktree 中执行 cherry-pick
+        cherry_pick_result = subprocess.run(
+            ['git', 'cherry-pick', commit_hash],
+            cwd=self.cherry_pick_worktree_dir,
+            capture_output=True,
+            text=True
+        )
+
+        self.append_log(f'STDOUT:\n{cherry_pick_result.stdout}')
+        if cherry_pick_result.stderr:
+            self.append_log(f'STDERR:\n{cherry_pick_result.stderr}')
+
+        if cherry_pick_result.returncode != 0:
+            self.append_log(f'Cherry-pick 失败！错误代码: {cherry_pick_result.returncode}')
+            self.append_log('请手动解决冲突后继续。')
+            self.cleanup_worktree()
+            self.append_log('\n由于失败，worktree 已清理。')
+            self.finish_execution(False)
+            return
+        else:
+            self.cherry_pick_successful += 1
+            self.append_log('Cherry-pick 成功！\n')
+
+        # 继续下一个
+        self.cherry_pick_current_index += 1
+        self.cherry_pick_next_commit()
+
+    def cleanup_worktree(self):
+        """清理 worktree"""
+        import subprocess
+        import shutil
+
+        if self.cherry_pick_worktree_dir:
+            self.append_log(f'\n--- 清理临时 worktree ---')
+            subprocess.run(
+                ['git', 'worktree', 'remove', self.cherry_pick_worktree_dir],
+                cwd=self.workspace_tab.path,
+                capture_output=True
+            )
+            shutil.rmtree(self.cherry_pick_worktree_dir, ignore_errors=True)
+            self.append_log('清理完成！')
+            self.cherry_pick_worktree_dir = None
+
+    def finish_execution(self, success):
+        """完成执行"""
+        self.is_executing = False
+        if success:
+            self.title_label.setText('<b>✅ Cherry-Pick 操作完成</b>')
+            self.title_label.setStyleSheet('font-size: 16px; color: #27ae60;')
+        else:
+            self.title_label.setText('<b>❌ Cherry-Pick 操作失败</b>')
+            self.title_label.setStyleSheet('font-size: 16px; color: #e74c3c;')
+        self.confirm_button.setVisible(False)
+        self.cancel_button.setText('关闭')
+        self.cancel_button.setEnabled(True)
+
+    def reject(self):
+        """重写 reject 方法，执行中不允许关闭"""
+        if self.is_executing:
+            return
+        super().reject()
+
+
 class WorkspaceTab(QWidget):
+    # 缓存 TTL：5分钟
+    CACHE_TTL = 300
+
     def __init__(self, path, config, workspace_config, workspace_name=None):
         super().__init__()
         self.path = path
@@ -27,6 +456,13 @@ class WorkspaceTab(QWidget):
         self.workspace_config = workspace_config
         self.workspace_name = workspace_name or ''
         self.initialized = False
+
+        # 分支缓存：{branch_type: (data, timestamp)}
+        self._branch_cache = {}
+        # 预取状态
+        self._is_prefetching = False
+        self._last_fetch_time = 0
+
         self.initUI()
 
     def initUI(self):
@@ -615,28 +1051,113 @@ class WorkspaceTab(QWidget):
         # 源分支选择
         self.cherry_pick_source_combo = NoWheelComboBox()
         self.enable_combo_search(self.cherry_pick_source_combo)
-        self.refresh_cherry_pick_source_button = QPushButton('刷新分支')
+        # 刷新按钮
+        self.refresh_cherry_pick_source_button = QPushButton('刷新')
+        self.refresh_cherry_pick_source_button.setFixedHeight(28)
+        self.refresh_cherry_pick_source_button.setToolTip('刷新源分支列表')
+        self.refresh_cherry_pick_source_button.setStyleSheet('''
+            QPushButton {
+                border: 1px solid #ccc;
+                border-radius: 4px;
+                background: transparent;
+                font-size: 12px;
+                color: #666;
+                padding: 0 8px;
+            }
+            QPushButton:hover {
+                background: #f0f0f0;
+                color: #333;
+            }
+        ''')
+
+        # 源分支 Loading 状态标签
+        self.source_loading_label = QLabel('')
+        self.source_loading_label.setStyleSheet('color: #888; font-size: 11px;')
 
         source_layout = QHBoxLayout()
-        source_layout.addWidget(self.cherry_pick_source_combo)
+        source_layout.addWidget(self.cherry_pick_source_combo, 1)
         source_layout.addWidget(self.refresh_cherry_pick_source_button)
+        source_layout.addWidget(self.source_loading_label)
         form_layout.addRow('选择源分支:', source_layout)
+
+        # 流向箭头指示器
+        arrow_label = QLabel('↓')
+        arrow_label.setAlignment(Qt.AlignCenter)
+        arrow_label.setStyleSheet('font-size: 20px; color: #3498db; font-weight: bold;')
+        form_layout.addRow('', arrow_label)
 
         # 目标分支选择
         self.cherry_pick_target_combo = NoWheelComboBox()
         self.enable_combo_search(self.cherry_pick_target_combo)
-        self.refresh_cherry_pick_target_button = QPushButton('刷新目标分支')
+        self.refresh_cherry_pick_target_button = QPushButton('刷新')
+        self.refresh_cherry_pick_target_button.setFixedHeight(28)
+        self.refresh_cherry_pick_target_button.setToolTip('刷新目标分支列表')
+        self.refresh_cherry_pick_target_button.setStyleSheet('''
+            QPushButton {
+                border: 1px solid #ccc;
+                border-radius: 4px;
+                background: transparent;
+                font-size: 12px;
+                color: #666;
+                padding: 0 8px;
+            }
+            QPushButton:hover {
+                background: #f0f0f0;
+                color: #333;
+            }
+        ''')
+
+        # 目标分支 Loading 状态标签
+        self.target_loading_label = QLabel('')
+        self.target_loading_label.setStyleSheet('color: #888; font-size: 11px;')
 
         target_layout = QHBoxLayout()
-        target_layout.addWidget(self.cherry_pick_target_combo)
+        target_layout.addWidget(self.cherry_pick_target_combo, 1)
         target_layout.addWidget(self.refresh_cherry_pick_target_button)
+        target_layout.addWidget(self.target_loading_label)
         form_layout.addRow('选择目标分支:', target_layout)
 
-        # 按钮区域
+        # 按钮区域 - 分级样式
         button_layout = QHBoxLayout()
-        self.cherry_pick_refresh_button = QPushButton('刷新差异')
+
+        # 刷新差异按钮 - 次要按钮
+        self.cherry_pick_refresh_button = QPushButton('刷新提交记录')
+        self.cherry_pick_refresh_button.setStyleSheet('''
+            QPushButton {
+                background: #f5f5f5;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                padding: 8px 16px;
+                color: #555;
+            }
+            QPushButton:hover {
+                background: #e8e8e8;
+            }
+        ''')
+
+        # 执行按钮 - 主按钮（高亮）
         self.cherry_pick_execute_button = QPushButton('执行 Cherry-Pick')
+        self.cherry_pick_execute_button.setStyleSheet('''
+            QPushButton {
+                background: #27ae60;
+                border: none;
+                border-radius: 4px;
+                padding: 10px 20px;
+                color: white;
+                font-weight: bold;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background: #2ecc71;
+            }
+            QPushButton:disabled {
+                background: #bdc3c7;
+                color: #ecf0f1;
+            }
+        ''')
+
         button_layout.addWidget(self.cherry_pick_refresh_button)
+        button_layout.addStretch()
         button_layout.addWidget(self.cherry_pick_execute_button)
         form_layout.addRow('', button_layout)
 
@@ -658,26 +1179,140 @@ class WorkspaceTab(QWidget):
         self.refresh_cherry_pick_source_button.clicked.connect(self.run_refresh_cherry_pick_source_branches)
         self.refresh_cherry_pick_target_button.clicked.connect(self.run_refresh_cherry_pick_target_branches)
         self.cherry_pick_source_combo.currentTextChanged.connect(self.run_refresh_cherry_pick_target_branches)
+        self.cherry_pick_source_combo.currentTextChanged.connect(self.run_cherry_pick_refresh)
         self.cherry_pick_refresh_button.clicked.connect(self.run_cherry_pick_refresh)
         self.cherry_pick_execute_button.clicked.connect(self.run_cherry_pick_execute)
 
         self.cherry_pick_tab.setLayout(layout)
 
-        self.run_refresh_cherry_pick_source_branches()
-        self.run_refresh_cherry_pick_target_branches()
+        # 初始化时触发异步预取
+        self.start_background_prefetch()
+        # 立即显示本地数据
+        self.load_local_branches_immediately()
+
+    def _get_cached_branches(self, cache_key):
+        """获取缓存的分支数据，如果过期则返回 None"""
+        if cache_key in self._branch_cache:
+            data, timestamp = self._branch_cache[cache_key]
+            if time.time() - timestamp < self.CACHE_TTL:
+                return data
+        return None
+
+    def _set_cached_branches(self, cache_key, data):
+        """设置分支缓存"""
+        self._branch_cache[cache_key] = (data, time.time())
+
+    def start_background_prefetch(self):
+        """后台静默预取 - 检查是否需要 git fetch"""
+        current_time = time.time()
+        # 如果 5 分钟内已进行过 fetch，则跳过
+        if current_time - self._last_fetch_time < self.CACHE_TTL:
+            return
+
+        if self._is_prefetching:
+            return
+
+        self._is_prefetching = True
+
+        def _do_fetch():
+            import subprocess
+            try:
+                # 静默执行 git fetch，不阻塞 UI
+                subprocess.run(
+                    ['git', 'fetch', '--quiet'],
+                    cwd=self.path,
+                    capture_output=True,
+                    timeout=60
+                )
+                return True
+            except Exception:
+                return False
+
+        def on_fetch_done(success):
+            self._is_prefetching = False
+            if success:
+                self._last_fetch_time = time.time()
+                # 清除缓存，强制下次刷新获取新数据
+                self._branch_cache.clear()
+
+        run_blocking(_do_fetch, on_success=on_fetch_done, parent=self)
+
+    def load_local_branches_immediately(self):
+        """立即加载本地分支数据（本地优先原则）"""
+        show_all = hasattr(self, 'cherry_pick_show_all_checkbox') and self.cherry_pick_show_all_checkbox.isChecked()
+
+        # 尝试从缓存获取
+        cache_key = f"branches_{'all' if show_all else 'local'}"
+        cached = self._get_cached_branches(cache_key)
+
+        if cached:
+            # 使用缓存数据
+            valid_branches, message = cached
+            self._populate_source_combo(valid_branches, show_all)
+            self.source_loading_label.setText('已从缓存加载')
+            # 填充源分支后，触发目标分支过滤
+            self.run_refresh_cherry_pick_target_branches()
+        else:
+            # 显示 Loading 状态
+            self.source_loading_label.setText('正在加载...')
+            self.target_loading_label.setText('正在加载...')
+
+            def _fetch_branches():
+                if show_all:
+                    return get_all_local_branches(self.path)
+                else:
+                    return get_local_branches(self.path)
+
+            def on_success(result):
+                valid_branches, message = result
+                # 存入缓存
+                self._set_cached_branches(cache_key, (valid_branches, message))
+                self._populate_source_combo(valid_branches, show_all)
+                self.source_loading_label.setText('')
+                # 填充源分支后，触发目标分支过滤
+                self.run_refresh_cherry_pick_target_branches()
+
+            run_blocking(_fetch_branches, on_success=on_success, parent=self)
+
+    def _populate_source_combo(self, valid_branches, show_all):
+        """填充源分支下拉框"""
+        self.cherry_pick_source_combo.clear()
+        if show_all:
+            self.cherry_pick_source_combo.addItems(valid_branches)
+        else:
+            ordered = self.sort_source_branches_by_history(valid_branches)
+            self.cherry_pick_source_combo.addItems(ordered)
+
+    def _populate_target_combo(self, valid_branches, show_all):
+        """填充目标分支下拉框"""
+        self.cherry_pick_target_combo.clear()
+        if show_all:
+            self.cherry_pick_target_combo.addItems(valid_branches)
+        else:
+            ordered = self.sort_source_branches_by_history(valid_branches)
+            self.cherry_pick_target_combo.addItems(ordered)
 
     def run_refresh_cherry_pick_source_branches(self):
-        """刷新源分支列表"""
+        """刷新源分支列表（强制从远程获取）"""
+        # 清除缓存，强制刷新
+        show_all = hasattr(self, 'cherry_pick_show_all_checkbox') and self.cherry_pick_show_all_checkbox.isChecked()
+        cache_key = f"branches_{'all' if show_all else 'local'}"
+        if cache_key in self._branch_cache:
+            del self._branch_cache[cache_key]
+
         self.cherry_pick_source_combo.clear()
+        self.source_loading_label.setText('正在检查远程更新...')
 
         for i in reversed(range(self.cherry_pick_diff_scroll_area.count())):
-            self.cherry_pick_diff_scroll_area.itemAt(i).widget().setParent(None)
+            item = self.cherry_pick_diff_scroll_area.itemAt(i)
+            if item:
+                widget = item.widget()
+                if widget:
+                    widget.setParent(None)
 
         loading_label = QLabel('正在加载源分支...')
         self.cherry_pick_diff_scroll_area.addWidget(loading_label)
         QApplication.processEvents()
-
-        show_all = hasattr(self, 'cherry_pick_show_all_checkbox') and self.cherry_pick_show_all_checkbox.isChecked()
 
         def _fetch_branches(use_all=show_all):
             if use_all:
@@ -687,6 +1322,9 @@ class WorkspaceTab(QWidget):
 
         def on_success(result, use_all=show_all):
             valid_branches, message = result
+            # 更新缓存
+            self._set_cached_branches(f"branches_{'all' if use_all else 'local'}", (valid_branches, message))
+
             self.cherry_pick_source_combo.clear()
             if use_all:
                 self.cherry_pick_source_combo.addItems(valid_branches)
@@ -695,18 +1333,43 @@ class WorkspaceTab(QWidget):
                 self.cherry_pick_source_combo.addItems(ordered)
 
             for i in reversed(range(self.cherry_pick_diff_scroll_area.count())):
-                self.cherry_pick_diff_scroll_area.itemAt(i).widget().setParent(None)
+                item = self.cherry_pick_diff_scroll_area.itemAt(i)
+                if item:
+                    widget = item.widget()
+                    if widget:
+                        widget.setParent(None)
 
             result_label = QLabel(message)
             self.cherry_pick_diff_scroll_area.addWidget(result_label)
+            self.source_loading_label.setText('已更新')
+
+            # 3秒后清除提示
+            QTimer.singleShot(3000, lambda: self.source_loading_label.setText(''))
 
         run_blocking(_fetch_branches, on_success=on_success, parent=self)
 
     def run_refresh_cherry_pick_target_branches(self):
-        """刷新目标分支列表"""
+        """刷新目标分支列表，根据源分支前缀过滤"""
         self.cherry_pick_target_combo.clear()
+        self.target_loading_label.setText('正在加载...')
+
+        # 获取源分支前缀用于过滤
+        source_branch = self.cherry_pick_source_combo.currentText()
+        filter_prefix = None
+        if source_branch and '__from__' in source_branch:
+            filter_prefix = source_branch.split('__from__')[0]
 
         show_all = hasattr(self, 'cherry_pick_show_all_checkbox') and self.cherry_pick_show_all_checkbox.isChecked()
+
+        # 尝试使用缓存
+        cache_key = f"branches_{'all' if show_all else 'local'}"
+        cached = self._get_cached_branches(cache_key)
+
+        if cached:
+            valid_branches, _ = cached
+            self._populate_target_combo_filtered(valid_branches, show_all, filter_prefix, exclude_branch=source_branch)
+            self.target_loading_label.setText('')
+            return
 
         def _fetch_branches(use_all=show_all):
             if use_all:
@@ -714,16 +1377,203 @@ class WorkspaceTab(QWidget):
             else:
                 return get_local_branches(self.path)
 
-        def on_success(result, use_all=show_all):
+        def on_success(result, use_all=show_all, prefix=filter_prefix, exclude=source_branch):
             valid_branches, _ = result
-            self.cherry_pick_target_combo.clear()
-            if use_all:
-                self.cherry_pick_target_combo.addItems(valid_branches)
-            else:
-                ordered = self.sort_source_branches_by_history(valid_branches)
-                self.cherry_pick_target_combo.addItems(ordered)
+            self._populate_target_combo_filtered(valid_branches, use_all, prefix, exclude_branch=exclude)
+            self.target_loading_label.setText('')
 
         run_blocking(_fetch_branches, on_success=on_success, parent=self)
+
+    def _populate_target_combo_filtered(self, branches, show_all, filter_prefix, exclude_branch=None):
+        """填充目标分支下拉框，支持前缀过滤和排除指定分支"""
+        self.cherry_pick_target_combo.clear()
+
+        # 排除源分支
+        if exclude_branch:
+            branches = [b for b in branches if b != exclude_branch]
+
+        if filter_prefix:
+            # 过滤出前缀匹配的分支
+            filtered = [b for b in branches if b.startswith(filter_prefix)]
+            if filtered:
+                if show_all:
+                    self.cherry_pick_target_combo.addItems(filtered)
+                else:
+                    ordered = self.sort_source_branches_by_history(filtered)
+                    self.cherry_pick_target_combo.addItems(ordered)
+            else:
+                # 无匹配时显示提示
+                self.cherry_pick_target_combo.addItem(f'(无匹配 "{filter_prefix}" 的分支)')
+        else:
+            # 无过滤条件，显示全部
+            if show_all:
+                self.cherry_pick_target_combo.addItems(branches)
+            else:
+                ordered = self.sort_source_branches_by_history(branches)
+                self.cherry_pick_target_combo.addItems(ordered)
+
+    def _set_execute_button_conflict(self, has_conflict, message=''):
+        """设置执行按钮的冲突状态
+
+        Args:
+            has_conflict: 是否存在冲突
+            message: 冲突信息（可选）
+        """
+        if has_conflict:
+            self.cherry_pick_execute_button.setEnabled(False)
+            self.cherry_pick_execute_button.setStyleSheet('''
+                QPushButton {
+                    background: #e74c3c;
+                    border: none;
+                    border-radius: 4px;
+                    padding: 10px 20px;
+                    color: white;
+                    font-weight: bold;
+                    font-size: 13px;
+                }
+                QPushButton:hover {
+                    background: #c0392b;
+                }
+            ''')
+            self.cherry_pick_execute_button.setToolTip(f'⚠️ 存在冲突: {message}')
+        else:
+            self.cherry_pick_execute_button.setEnabled(True)
+            self.cherry_pick_execute_button.setStyleSheet('''
+                QPushButton {
+                    background: #27ae60;
+                    border: none;
+                    border-radius: 4px;
+                    padding: 10px 20px;
+                    color: white;
+                    font-weight: bold;
+                    font-size: 13px;
+                }
+                QPushButton:hover {
+                    background: #2ecc71;
+                }
+                QPushButton:disabled {
+                    background: #bdc3c7;
+                    color: #ecf0f1;
+                }
+            ''')
+            self.cherry_pick_execute_button.setToolTip('')
+
+    def _set_all_checkboxes(self, checked):
+        """设置所有复选框的选中状态"""
+        if hasattr(self, 'cherry_pick_commit_checkboxes'):
+            for checkbox, _ in self.cherry_pick_commit_checkboxes:
+                checkbox.setChecked(checked)
+
+    def _perform_dry_run_check(self, commits):
+        """执行 cherry-pick 预检（Dry Run）
+
+        使用 git cherry-pick --no-commit 检测是否存在冲突
+        """
+        import subprocess
+        import tempfile
+        import shutil
+
+        target_branch = self.cherry_pick_target_combo.currentText()
+        if not target_branch:
+            if hasattr(self, 'dry_run_status_label') and self.dry_run_status_label:
+                self.dry_run_status_label.setText('⚠️ 请选择目标分支后再进行预检')
+                self.dry_run_status_label.setStyleSheet('color: #f39c12; font-size: 12px; padding: 5px;')
+            self._set_execute_button_conflict(True, '未选择目标分支')
+            return
+
+        # 提取提交哈希列表
+        commit_hashes = [c['hash'] for c in commits]
+
+        def _do_dry_run():
+            try:
+                # 创建临时目录用于 worktree
+                temp_dir = tempfile.mkdtemp(prefix='cherry_pick_dryrun_')
+
+                # 创建 worktree
+                worktree_result = subprocess.run(
+                    ['git', 'worktree', 'add', temp_dir, target_branch],
+                    cwd=self.path,
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+
+                if worktree_result.returncode != 0:
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                    return {'success': False, 'error': f'无法创建 worktree: {worktree_result.stderr}'}
+
+                conflicts = []
+                try:
+                    # 逐个检查提交是否有冲突
+                    for commit_hash in commit_hashes:
+                        # 使用 --no-commit 进行预检
+                        result = subprocess.run(
+                            ['git', 'cherry-pick', '--no-commit', commit_hash],
+                            cwd=temp_dir,
+                            capture_output=True,
+                            text=True,
+                            timeout=30
+                        )
+
+                        if result.returncode != 0:
+                            # 检查是否是冲突
+                            if 'conflict' in result.stdout.lower() or 'conflict' in result.stderr.lower():
+                                conflicts.append(commit_hash[:8])
+                            # 中止当前的 cherry-pick
+                            subprocess.run(
+                                ['git', 'cherry-pick', '--abort'],
+                                cwd=temp_dir,
+                                capture_output=True,
+                                timeout=10
+                            )
+                        else:
+                            # 成功，重置更改
+                            subprocess.run(
+                                ['git', 'reset', '--hard', 'HEAD'],
+                                cwd=temp_dir,
+                                capture_output=True,
+                                timeout=10
+                            )
+
+                    return {'success': True, 'conflicts': conflicts}
+
+                finally:
+                    # 清理 worktree
+                    subprocess.run(
+                        ['git', 'worktree', 'remove', temp_dir],
+                        cwd=self.path,
+                        capture_output=True,
+                        timeout=10
+                    )
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+
+            except Exception as e:
+                return {'success': False, 'error': str(e)}
+
+        def on_dry_run_done(result):
+            if not hasattr(self, 'dry_run_status_label') or not self.dry_run_status_label:
+                return
+
+            if not result['success']:
+                self.dry_run_status_label.setText(f'⚠️ 预检失败: {result.get("error", "未知错误")}')
+                self.dry_run_status_label.setStyleSheet('color: #f39c12; font-size: 12px; padding: 5px;')
+                self._set_execute_button_conflict(False)  # 预检失败不阻止执行
+                return
+
+            conflicts = result.get('conflicts', [])
+            if conflicts:
+                conflict_msg = f'检测到 {len(conflicts)} 个提交可能存在冲突: {", ".join(conflicts[:3])}'
+                if len(conflicts) > 3:
+                    conflict_msg += f' ...等 {len(conflicts)} 个'
+                self.dry_run_status_label.setText(f'⚠️ {conflict_msg}')
+                self.dry_run_status_label.setStyleSheet('color: #e74c3c; font-size: 12px; padding: 5px;')
+                self._set_execute_button_conflict(True, conflict_msg)
+            else:
+                self.dry_run_status_label.setText('✅ 预检通过，未检测到冲突')
+                self.dry_run_status_label.setStyleSheet('color: #27ae60; font-size: 12px; padding: 5px;')
+                self._set_execute_button_conflict(False)
+
+        run_blocking(_do_dry_run, on_success=on_dry_run_done, parent=self)
 
     def run_cherry_pick_refresh(self):
         """刷新源分支的提交记录（比较 __from__ 后源分支的差异）"""
@@ -789,60 +1639,169 @@ class WorkspaceTab(QWidget):
 
             # 清除加载标签
             for i in reversed(range(self.cherry_pick_diff_scroll_area.count())):
-                self.cherry_pick_diff_scroll_area.itemAt(i).widget().setParent(None)
+                item = self.cherry_pick_diff_scroll_area.itemAt(i)
+                if item:
+                    widget = item.widget()
+                    if widget:
+                        widget.setParent(None)
 
             if not matching_branches:
                 error_label = QLabel(f'找不到分支 "{source_branch}"')
                 error_label.setStyleSheet('color: #e74c3c;')
                 self.cherry_pick_diff_scroll_area.addWidget(error_label)
+                self._set_execute_button_conflict(True, '找不到分支')
                 return
 
             if not all_commits:
                 info_label = QLabel(f'没有找到差异提交。')
                 info_label.setStyleSheet('color: #7f8c8d;')
                 self.cherry_pick_diff_scroll_area.addWidget(info_label)
+                self._set_execute_button_conflict(False)
                 return
 
             # 显示提交列表，带复选框
             title_label = QLabel(f'<b>找到 {len(all_commits)} 个提交:</b>')
-            title_label.setStyleSheet('color: #2c3e50; font-size: 14px;')
+            title_label.setStyleSheet('color: #2c3e50; font-size: 14px; margin-bottom: 8px;')
             self.cherry_pick_diff_scroll_area.addWidget(title_label)
+
+            # 预检状态标签
+            self.dry_run_status_label = QLabel('🔍 正在进行冲突预检...')
+            self.dry_run_status_label.setStyleSheet('color: #3498db; font-size: 12px; padding: 5px;')
+            self.cherry_pick_diff_scroll_area.addWidget(self.dry_run_status_label)
+
+            # 创建表格
+            self.commit_table = QTableWidget()
+            self.commit_table.setColumnCount(5)
+            self.commit_table.setHorizontalHeaderLabels(['选择', 'Hash', '提交信息', '作者', '时间'])
+            self.commit_table.setRowCount(len(all_commits))
+            self.commit_table.setAlternatingRowColors(True)
+            self.commit_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+            self.commit_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+            self.commit_table.verticalHeader().setVisible(False)
+            self.commit_table.setStyleSheet('''
+                QTableWidget {
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                    gridline-mode: none;
+                }
+                QTableWidget::item {
+                    padding: 8px;
+                }
+                QTableWidget::item:selected {
+                    background: #e8f4fc;
+                    color: #333;
+                }
+                QHeaderView::section {
+                    background: #f5f5f5;
+                    padding: 8px;
+                    border: none;
+                    border-bottom: 2px solid #3498db;
+                    font-weight: bold;
+                }
+            ''')
+
+            # 设置列宽
+            header = self.commit_table.horizontalHeader()
+            header.setSectionResizeMode(0, QHeaderView.Fixed)
+            header.setSectionResizeMode(1, QHeaderView.Fixed)
+            header.setSectionResizeMode(2, QHeaderView.Stretch)
+            header.setSectionResizeMode(3, QHeaderView.Fixed)
+            header.setSectionResizeMode(4, QHeaderView.Fixed)
+            self.commit_table.setColumnWidth(0, 50)
+            self.commit_table.setColumnWidth(1, 80)
+            self.commit_table.setColumnWidth(3, 100)
+            self.commit_table.setColumnWidth(4, 140)
 
             # 存储复选框的引用
             self.cherry_pick_commit_checkboxes = []
 
-            for commit in all_commits:
-                commit_widget = QWidget()
-                commit_layout = QVBoxLayout()
-                commit_layout.setContentsMargins(0, 5, 0, 5)
-
-                # 第一行：复选框 + 提交信息
-                top_row = QHBoxLayout()
+            for row, commit in enumerate(all_commits):
+                # 复选框
                 checkbox = QCheckBox()
                 checkbox.setChecked(False)
-                checkbox.setStyleSheet('margin-left: 20px;')
+                checkbox_widget = QWidget()
+                checkbox_layout = QHBoxLayout(checkbox_widget)
+                checkbox_layout.addWidget(checkbox)
+                checkbox_layout.setAlignment(Qt.AlignCenter)
+                checkbox_layout.setContentsMargins(0, 0, 0, 0)
+                self.commit_table.setCellWidget(row, 0, checkbox_widget)
 
-                commit_text = QTextEdit()
-                commit_text.setReadOnly(True)
-                commit_text.setPlainText(f'{commit["hash"][:8]} - {commit["message"]}')
-                commit_text.setMaximumHeight(50)
-                commit_text.setStyleSheet('background: #f5f5f5; border: 1px solid #ddd; border-radius: 3px;')
+                # Hash
+                hash_item = QTableWidgetItem(commit['hash'][:8])
+                hash_item.setForeground(Qt.blue)
+                self.commit_table.setItem(row, 1, hash_item)
 
-                top_row.addWidget(checkbox)
-                top_row.addWidget(commit_text, 1)
+                # 提交信息
+                message = commit['message']
+                if len(message) > 60:
+                    message = message[:60] + '...'
+                message_item = QTableWidgetItem(message)
+                message_item.setToolTip(commit['message'])
+                self.commit_table.setItem(row, 2, message_item)
 
-                # 第二行：详细信息
-                info_text = QLabel(f'    作者: {commit["author"]} <{commit["email"]}> | 时间: {commit["date"][:19]} | 分支: {commit["source_branch"]}')
-                info_text.setStyleSheet('color: #7f8c8d; font-size: 11px;')
+                # 作者
+                author_item = QTableWidgetItem(commit.get('author', 'Unknown'))
+                author_item.setToolTip(commit.get('email', ''))
+                self.commit_table.setItem(row, 3, author_item)
 
-                commit_layout.addLayout(top_row)
-                commit_layout.addWidget(info_text)
-
-                commit_widget.setLayout(commit_layout)
-                self.cherry_pick_diff_scroll_area.addWidget(commit_widget)
+                # 时间
+                date_str = commit.get('date', '')[:19] if commit.get('date') else ''
+                date_item = QTableWidgetItem(date_str)
+                self.commit_table.setItem(row, 4, date_item)
 
                 # 保存复选框和对应的 commit 信息
                 self.cherry_pick_commit_checkboxes.append((checkbox, commit))
+
+            # 设置行高
+            for row in range(len(all_commits)):
+                self.commit_table.setRowHeight(row, 35)
+
+            self.cherry_pick_diff_scroll_area.addWidget(self.commit_table)
+
+            # 添加全选/取消全选按钮 (使用 QWidget 容器以便正确清理)
+            select_buttons_widget = QWidget()
+            select_buttons_layout = QHBoxLayout(select_buttons_widget)
+            select_buttons_layout.setContentsMargins(0, 5, 0, 5)
+
+            select_all_btn = QPushButton('全选')
+            select_all_btn.setFixedHeight(28)
+            select_all_btn.setStyleSheet('''
+                QPushButton {
+                    background: #3498db;
+                    color: white;
+                    border: none;
+                    border-radius: 4px;
+                    padding: 4px 12px;
+                }
+                QPushButton:hover {
+                    background: #2980b9;
+                }
+            ''')
+            select_all_btn.clicked.connect(lambda: self._set_all_checkboxes(True))
+
+            deselect_all_btn = QPushButton('取消全选')
+            deselect_all_btn.setFixedHeight(28)
+            deselect_all_btn.setStyleSheet('''
+                QPushButton {
+                    background: #95a5a6;
+                    color: white;
+                    border: none;
+                    border-radius: 4px;
+                    padding: 4px 12px;
+                }
+                QPushButton:hover {
+                    background: #7f8c8d;
+                }
+            ''')
+            deselect_all_btn.clicked.connect(lambda: self._set_all_checkboxes(False))
+
+            select_buttons_layout.addWidget(select_all_btn)
+            select_buttons_layout.addWidget(deselect_all_btn)
+            select_buttons_layout.addStretch()
+            self.cherry_pick_diff_scroll_area.addWidget(select_buttons_widget)
+
+            # 执行预检
+            self._perform_dry_run_check(all_commits)
 
         run_blocking(_fetch_commits, on_success=on_success, parent=self)
 
@@ -852,18 +1811,12 @@ class WorkspaceTab(QWidget):
         target_branch = self.cherry_pick_target_combo.currentText()
 
         if not source_branch or not target_branch:
-            self.clear_cherry_pick_area()
-            error_label = QLabel('请先选择源分支和目标分支。')
-            error_label.setStyleSheet('color: #e74c3c;')
-            self.cherry_pick_diff_scroll_area.addWidget(error_label)
+            QMessageBox.warning(self, '提示', '请先选择源分支和目标分支。')
             return
 
         # 获取选中的提交
         if not hasattr(self, 'cherry_pick_commit_checkboxes') or not self.cherry_pick_commit_checkboxes:
-            self.clear_cherry_pick_area()
-            error_label = QLabel('请先点击"刷新差异"查看提交列表。')
-            error_label.setStyleSheet('color: #e74c3c;')
-            self.cherry_pick_diff_scroll_area.addWidget(error_label)
+            QMessageBox.warning(self, '提示', '请先点击"刷新提交记录"查看提交列表。')
             return
 
         selected_commits = []
@@ -872,195 +1825,25 @@ class WorkspaceTab(QWidget):
                 selected_commits.append(commit)
 
         if not selected_commits:
-            self.clear_cherry_pick_area()
-            error_label = QLabel('请至少选择一个提交进行 cherry-pick。')
-            error_label.setStyleSheet('color: #e74c3c;')
-            self.cherry_pick_diff_scroll_area.addWidget(error_label)
+            QMessageBox.warning(self, '提示', '请至少选择一个提交进行 Cherry-Pick。')
             return
 
-        # 确认对话框
-        reply = QMessageBox.question(
-            self, '确认 Cherry-Pick',
-            f"将 {len(selected_commits)} 个提交 cherry-pick 到目标分支 \"{target_branch}\"？\n\n"
-            "这将会切换到目标分支并执行 cherry-pick 操作。",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        # 二阶段确认对话框（包含执行逻辑）
+        source_branch = self.cherry_pick_source_combo.currentText()
+        confirm_dialog = CherryPickConfirmDialog(
+            source_branch=source_branch,
+            target_branch=target_branch,
+            commits=selected_commits,
+            workspace_tab=self,
+            parent=self
         )
-        if reply == QMessageBox.No:
-            return
-
-        # 开始执行 cherry-pick
-        self.execute_cherry_pick_step_by_step(selected_commits, target_branch)
-
-    def execute_cherry_pick_step_by_step(self, selected_commits, target_branch):
-        """逐步执行 cherry-pick，使用 worktree 不需要切换当前分支"""
-        import subprocess
-        import tempfile
-        import shutil
-        import os
-
-        self.clear_cherry_pick_area()
-        self.cherry_pick_output = QTextEdit()
-        self.cherry_pick_output.setReadOnly(True)
-        self.cherry_pick_diff_scroll_area.addWidget(self.cherry_pick_output)
-
-        self.cherry_pick_commits = selected_commits
-        self.cherry_pick_target_branch = target_branch
-        self.cherry_pick_current_index = 0
-        self.cherry_pick_successful = 0
-
-        # 创建临时 worktree 目录
-        temp_dir = tempfile.mkdtemp(prefix='cherry-pick-')
-        self.cherry_pick_worktree_dir = temp_dir
-
-        self.append_cherry_pick_output(f'--- 创建临时 worktree: {temp_dir} ---')
-
-        # 检查目标分支是否存在于本地
-        self.append_cherry_pick_output(f'--- 检查目标分支: {target_branch} ---')
-        local_branch_check = subprocess.run(
-            ['git', 'branch', '--list', target_branch],
-            cwd=self.path,
-            capture_output=True,
-            text=True
-        )
-
-        # 检查目标分支是否存在于远程
-        remote_branch_check = subprocess.run(
-            ['git', 'branch', '-r', '--list', f'origin/{target_branch}'],
-            cwd=self.path,
-            capture_output=True,
-            text=True
-        )
-
-        # 确定使用哪个命令创建 worktree
-        worktree_cmd = ['git', 'worktree', 'add', '-f', temp_dir]
-
-        if local_branch_check.returncode == 0 and local_branch_check.stdout.strip():
-            # 本地分支存在，直接使用
-            worktree_cmd.append(target_branch)
-            self.append_cherry_pick_output(f'使用本地分支: {target_branch}\n')
-        elif remote_branch_check.returncode == 0 and remote_branch_check.stdout.strip():
-            # 远程分支存在，从远程创建新分支
-            worktree_cmd.extend(['-b', target_branch, f'origin/{target_branch}'])
-            self.append_cherry_pick_output(f'从远程创建分支: origin/{target_branch}\n')
-        else:
-            # 都不存在，使用本地分支（可能会失败）
-            worktree_cmd.append(target_branch)
-            self.append_cherry_pick_output(f'尝试使用分支: {target_branch}\n')
-
-        worktree_result = subprocess.run(
-            worktree_cmd,
-            cwd=self.path,
-            capture_output=True,
-            text=True
-        )
-
-        self.append_cherry_pick_output(f'STDOUT:\n{worktree_result.stdout}')
-        if worktree_result.stderr:
-            self.append_cherry_pick_output(f'STDERR:\n{worktree_result.stderr}')
-
-        if worktree_result.returncode != 0:
-            self.append_cherry_pick_output(f'\n创建 worktree 失败！错误代码: {worktree_result.returncode}')
-            shutil.rmtree(temp_dir, ignore_errors=True)
-            return
-
-        # 验证 worktree 中的分支
-        verify_result = subprocess.run(
-            ['git', 'branch', '--show-current'],
-            cwd=temp_dir,
-            capture_output=True,
-            text=True
-        )
-        current_branch = verify_result.stdout.strip()
-        self.append_cherry_pick_output(f'Worktree 当前分支: {current_branch}\n')
-
-        # 开始逐个执行 cherry-pick
-        self.cherry_pick_next_commit()
-
-    def append_cherry_pick_output(self, text):
-        """追加输出到文本框"""
-        self.cherry_pick_output.setPlainText(self.cherry_pick_output.toPlainText() + text + '\n')
-        # 滚动到底部
-        cursor = self.cherry_pick_output.textCursor()
-        cursor.movePosition(cursor.End)
-        self.cherry_pick_output.setTextCursor(cursor)
-        QApplication.processEvents()
-
-    def cherry_pick_next_commit(self):
-        """执行下一个 cherry-pick（在 worktree 中）"""
-        import subprocess
-        import shutil
-
-        if self.cherry_pick_current_index >= len(self.cherry_pick_commits):
-            # 全部完成，执行 push 和清理
-            self.append_cherry_pick_output(f'\n--- 完成！成功 cherry-pick 了 {self.cherry_pick_successful} 个提交 ---')
-
-            # 执行 git push（在 worktree 中）
-            self.append_cherry_pick_output(f'\n--- 正在推送到远程仓库 ---')
-            push_result = subprocess.run(
-                ['git', 'push', '-u', 'origin', self.cherry_pick_target_branch],
-                cwd=self.cherry_pick_worktree_dir,
-                capture_output=True,
-                text=True
-            )
-            self.append_cherry_pick_output(f'STDOUT:\n{push_result.stdout}')
-            if push_result.stderr:
-                self.append_cherry_pick_output(f'STDERR:\n{push_result.stderr}')
-
-            if push_result.returncode == 0:
-                self.append_cherry_pick_output(f'\n--- 推送成功！---')
-            else:
-                self.append_cherry_pick_output(f'\n--- 推送失败！错误代码: {push_result.returncode} ---')
-
-            # 清理 worktree
-            self.append_cherry_pick_output(f'\n--- 清理临时 worktree ---')
-            subprocess.run(
-                ['git', 'worktree', 'remove', self.cherry_pick_worktree_dir],
-                cwd=self.path,
-                capture_output=True
-            )
-            shutil.rmtree(self.cherry_pick_worktree_dir, ignore_errors=True)
-            self.append_cherry_pick_output('清理完成！')
-            return
-
-        commit = self.cherry_pick_commits[self.cherry_pick_current_index]
-        commit_hash = commit['hash']
-        commit_msg = commit['message'][:50]
-
-        self.append_cherry_pick_output(f'--- Cherry-pick ({self.cherry_pick_current_index + 1}/{len(self.cherry_pick_commits)}): {commit_hash[:8]} - {commit_msg} ---')
-
-        # 在 worktree 中执行 cherry-pick
-        cherry_pick_result = subprocess.run(
-            ['git', 'cherry-pick', commit_hash],
-            cwd=self.cherry_pick_worktree_dir,
-            capture_output=True,
-            text=True
-        )
-
-        self.append_cherry_pick_output(f'STDOUT:\n{cherry_pick_result.stdout}')
-        if cherry_pick_result.stderr:
-            self.append_cherry_pick_output(f'STDERR:\n{cherry_pick_result.stderr}')
-
-        if cherry_pick_result.returncode != 0:
-            self.append_cherry_pick_output(f'Cherry-pick 失败！错误代码: {cherry_pick_result.returncode}')
-            self.append_cherry_pick_output('请手动解决冲突后继续。')
-            # 清理 worktree
-            subprocess.run(
-                ['git', 'worktree', 'remove', self.cherry_pick_worktree_dir],
-                cwd=self.path,
-                capture_output=True
-            )
-            shutil.rmtree(self.cherry_pick_worktree_dir, ignore_errors=True)
-            self.append_cherry_pick_output('\n由于失败，worktree 已清理。')
-            return
-        else:
-            self.cherry_pick_successful += 1
-            self.append_cherry_pick_output('Cherry-pick 成功！\n')
-
-        # 继续下一个
-        self.cherry_pick_current_index += 1
-        self.cherry_pick_next_commit()
+        confirm_dialog.exec_()
 
     def clear_cherry_pick_area(self):
         """清空 cherry-pick 显示区域"""
         for i in reversed(range(self.cherry_pick_diff_scroll_area.count())):
-            self.cherry_pick_diff_scroll_area.itemAt(i).widget().setParent(None)
+            item = self.cherry_pick_diff_scroll_area.itemAt(i)
+            if item:
+                widget = item.widget()
+                if widget:
+                    widget.setParent(None)
