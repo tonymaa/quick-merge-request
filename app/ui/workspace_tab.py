@@ -914,24 +914,41 @@ class WorkspaceTab(QWidget):
 
         self.append_cherry_pick_output(f'--- 创建临时 worktree: {temp_dir} ---')
 
-        # 检查目标分支是否存在于远程
+        # 检查目标分支是否存在于本地
         self.append_cherry_pick_output(f'--- 检查目标分支: {target_branch} ---')
-        branch_check = subprocess.run(
+        local_branch_check = subprocess.run(
+            ['git', 'branch', '--list', target_branch],
+            cwd=self.path,
+            capture_output=True,
+            text=True
+        )
+
+        # 检查目标分支是否存在于远程
+        remote_branch_check = subprocess.run(
             ['git', 'branch', '-r', '--list', f'origin/{target_branch}'],
             cwd=self.path,
             capture_output=True,
             text=True
         )
 
-        # 使用 git worktree add 创建 worktree
-        # 如果远程分支存在，使用 origin/target_branch；否则使用本地分支
-        if branch_check.returncode == 0 and branch_check.stdout.strip():
-            branch_ref = f'origin/{target_branch}'
+        # 确定使用哪个命令创建 worktree
+        worktree_cmd = ['git', 'worktree', 'add', '-f', temp_dir]
+
+        if local_branch_check.returncode == 0 and local_branch_check.stdout.strip():
+            # 本地分支存在，直接使用
+            worktree_cmd.append(target_branch)
+            self.append_cherry_pick_output(f'使用本地分支: {target_branch}\n')
+        elif remote_branch_check.returncode == 0 and remote_branch_check.stdout.strip():
+            # 远程分支存在，从远程创建新分支
+            worktree_cmd.extend(['-b', target_branch, f'origin/{target_branch}'])
+            self.append_cherry_pick_output(f'从远程创建分支: origin/{target_branch}\n')
         else:
-            branch_ref = target_branch
+            # 都不存在，使用本地分支（可能会失败）
+            worktree_cmd.append(target_branch)
+            self.append_cherry_pick_output(f'尝试使用分支: {target_branch}\n')
 
         worktree_result = subprocess.run(
-            ['git', 'worktree', 'add', '-f', temp_dir, branch_ref],
+            worktree_cmd,
             cwd=self.path,
             capture_output=True,
             text=True
@@ -946,7 +963,15 @@ class WorkspaceTab(QWidget):
             shutil.rmtree(temp_dir, ignore_errors=True)
             return
 
-        self.append_cherry_pick_output(f'Worktree 创建成功！\n')
+        # 验证 worktree 中的分支
+        verify_result = subprocess.run(
+            ['git', 'branch', '--show-current'],
+            cwd=temp_dir,
+            capture_output=True,
+            text=True
+        )
+        current_branch = verify_result.stdout.strip()
+        self.append_cherry_pick_output(f'Worktree 当前分支: {current_branch}\n')
 
         # 开始逐个执行 cherry-pick
         self.cherry_pick_next_commit()
