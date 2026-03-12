@@ -1847,3 +1847,9 @@ class WorkspaceTab(QWidget):
                 widget = item.widget()
                 if widget:
                     widget.setParent(None)
+        # 清除提交复选框数据引用
+        if hasattr(self, 'cherry_pick_commit_checkboxes'):
+            self.cherry_pick_commit_checkboxes = []
+        # 清除预检状态标签引用
+        if hasattr(self, 'dry_run_status_label'):
+            self.dry_run_status_label = None
