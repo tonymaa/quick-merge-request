@@ -8,6 +8,7 @@ from PyQt5.QtWidgets import (
     QFrame, QSizePolicy, QTableWidget, QTableWidgetItem, QDialogButtonBox, QHeaderView
 )
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
+from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import QApplication
 
 from app.async_utils import run_blocking
@@ -395,12 +396,29 @@ class CherryPickConfirmDialog(QDialog):
             self.append_log(f'STDERR:\n{cherry_pick_result.stderr}')
 
         if cherry_pick_result.returncode != 0:
-            self.append_log(f'Cherry-pick 失败！错误代码: {cherry_pick_result.returncode}')
-            self.append_log('请手动解决冲突后继续。')
-            self.cleanup_worktree()
-            self.append_log('\n由于失败，worktree 已清理。')
-            self.finish_execution(False)
-            return
+            # 检查是否是空提交（内容已存在）
+            is_empty = 'empty' in cherry_pick_result.stderr.lower() or 'empty' in cherry_pick_result.stdout.lower()
+
+            if is_empty:
+                # 空提交，跳过
+                self.append_log('⚠️ 提交内容已存在，自动跳过（--skip）\n')
+                subprocess.run(
+                    ['git', 'cherry-pick', '--skip'],
+                    cwd=self.cherry_pick_worktree_dir,
+                    capture_output=True
+                )
+                # 继续下一个
+                self.cherry_pick_current_index += 1
+                self.cherry_pick_next_commit()
+                return
+            else:
+                # 真正的冲突，需要手动处理
+                self.append_log(f'Cherry-pick 失败！错误代码: {cherry_pick_result.returncode}')
+                self.append_log('请手动解决冲突后继续。')
+                self.cleanup_worktree()
+                self.append_log('\n由于失败，worktree 已清理。')
+                self.finish_execution(False)
+                return
         else:
             self.cherry_pick_successful += 1
             self.append_log('Cherry-pick 成功！\n')
@@ -417,11 +435,17 @@ class CherryPickConfirmDialog(QDialog):
         if self.cherry_pick_worktree_dir:
             self.append_log(f'\n--- 清理临时 worktree ---')
             subprocess.run(
-                ['git', 'worktree', 'remove', self.cherry_pick_worktree_dir],
+                ['git', 'worktree', 'remove', '--force', self.cherry_pick_worktree_dir],
                 cwd=self.workspace_tab.path,
                 capture_output=True
             )
             shutil.rmtree(self.cherry_pick_worktree_dir, ignore_errors=True)
+            # 清理可能残留的 worktree 记录
+            subprocess.run(
+                ['git', 'worktree', 'prune'],
+                cwd=self.workspace_tab.path,
+                capture_output=True
+            )
             self.append_log('清理完成！')
             self.cherry_pick_worktree_dir = None
 
@@ -1180,6 +1204,7 @@ class WorkspaceTab(QWidget):
         self.refresh_cherry_pick_target_button.clicked.connect(self.run_refresh_cherry_pick_target_branches)
         self.cherry_pick_source_combo.currentTextChanged.connect(self.run_refresh_cherry_pick_target_branches)
         self.cherry_pick_source_combo.currentTextChanged.connect(self.run_cherry_pick_refresh)
+        self.cherry_pick_target_combo.currentTextChanged.connect(self.run_cherry_pick_dry_run_on_target_change)
         self.cherry_pick_refresh_button.clicked.connect(self.run_cherry_pick_refresh)
         self.cherry_pick_execute_button.clicked.connect(self.run_cherry_pick_execute)
 
@@ -1464,6 +1489,35 @@ class WorkspaceTab(QWidget):
             for checkbox, _ in self.cherry_pick_commit_checkboxes:
                 checkbox.setChecked(checked)
 
+    def run_cherry_pick_dry_run_on_target_change(self):
+        """目标分支切换时重新执行预检"""
+        # 检查是否有提交记录
+        if not hasattr(self, 'cherry_pick_commit_checkboxes') or not self.cherry_pick_commit_checkboxes:
+            return
+
+        # 清除表格中的旧冲突标记
+        if hasattr(self, 'commit_table') and self.commit_table:
+            for row in range(self.commit_table.rowCount()):
+                hash_item = self.commit_table.item(row, 1)
+                if hash_item:
+                    commit_hash = hash_item.text().replace('⚠️ ', '')
+                    for col in range(self.commit_table.columnCount()):
+                        item = self.commit_table.item(row, col)
+                        if item:
+                            item.setBackground(QColor('transparent'))
+                            if col == 1:
+                                item.setText(commit_hash)
+                                item.setToolTip('')
+
+        # 更新预检状态标签
+        if hasattr(self, 'dry_run_status_label') and self.dry_run_status_label:
+            self.dry_run_status_label.setText('🔍 正在进行冲突预检...')
+            self.dry_run_status_label.setStyleSheet('color: #3498db; font-size: 12px; padding: 5px;')
+
+        # 获取所有提交
+        all_commits = [commit for _, commit in self.cherry_pick_commit_checkboxes]
+        self._perform_dry_run_check(all_commits)
+
     def _perform_dry_run_check(self, commits):
         """执行 cherry-pick 预检（Dry Run）
 
@@ -1478,7 +1532,7 @@ class WorkspaceTab(QWidget):
             if hasattr(self, 'dry_run_status_label') and self.dry_run_status_label:
                 self.dry_run_status_label.setText('⚠️ 请选择目标分支后再进行预检')
                 self.dry_run_status_label.setStyleSheet('color: #f39c12; font-size: 12px; padding: 5px;')
-            self._set_execute_button_conflict(True, '未选择目标分支')
+            # 预检失败不阻止执行
             return
 
         # 提取提交哈希列表
@@ -1503,6 +1557,7 @@ class WorkspaceTab(QWidget):
                     return {'success': False, 'error': f'无法创建 worktree: {worktree_result.stderr}'}
 
                 conflicts = []
+                empty_commits = []
                 try:
                     # 逐个检查提交是否有冲突
                     for commit_hash in commit_hashes:
@@ -1516,9 +1571,16 @@ class WorkspaceTab(QWidget):
                         )
 
                         if result.returncode != 0:
+                            # 检查是否是空提交（内容已存在）
+                            is_empty = 'empty' in result.stdout.lower() or 'empty' in result.stderr.lower()
                             # 检查是否是冲突
-                            if 'conflict' in result.stdout.lower() or 'conflict' in result.stderr.lower():
+                            is_conflict = 'conflict' in result.stdout.lower() or 'conflict' in result.stderr.lower()
+
+                            if is_conflict and not is_empty:
                                 conflicts.append(commit_hash[:8])
+                            elif is_empty:
+                                empty_commits.append(commit_hash[:8])
+
                             # 中止当前的 cherry-pick
                             subprocess.run(
                                 ['git', 'cherry-pick', '--abort'],
@@ -1535,17 +1597,24 @@ class WorkspaceTab(QWidget):
                                 timeout=10
                             )
 
-                    return {'success': True, 'conflicts': conflicts}
+                    return {'success': True, 'conflicts': conflicts, 'empty_commits': empty_commits}
 
                 finally:
-                    # 清理 worktree
+                    # 清理 worktree（使用 --force 强制删除）
                     subprocess.run(
-                        ['git', 'worktree', 'remove', temp_dir],
+                        ['git', 'worktree', 'remove', '--force', temp_dir],
                         cwd=self.path,
                         capture_output=True,
                         timeout=10
                     )
                     shutil.rmtree(temp_dir, ignore_errors=True)
+                    # 清理可能残留的 worktree 记录
+                    subprocess.run(
+                        ['git', 'worktree', 'prune'],
+                        cwd=self.path,
+                        capture_output=True,
+                        timeout=10
+                    )
 
             except Exception as e:
                 return {'success': False, 'error': str(e)}
@@ -1561,17 +1630,64 @@ class WorkspaceTab(QWidget):
                 return
 
             conflicts = result.get('conflicts', [])
+            empty_commits = result.get('empty_commits', [])
+
+            # 在表格中标记冲突和空提交
+            if hasattr(self, 'commit_table') and self.commit_table:
+                conflict_set = set(conflicts)
+                empty_set = set(empty_commits)
+                for row in range(self.commit_table.rowCount()):
+                    hash_item = self.commit_table.item(row, 1)
+                    if hash_item:
+                        commit_hash = hash_item.text()
+                        if commit_hash in conflict_set:
+                            # 标记冲突行 - 红色背景
+                            for col in range(self.commit_table.columnCount()):
+                                item = self.commit_table.item(row, col)
+                                if item:
+                                    item.setBackground(QColor('#ffcccc'))
+                                    if col == 1:  # Hash 列添加冲突标记
+                                        item.setText(f'⚠️ {commit_hash}')
+                                        item.setToolTip('此提交可能存在冲突')
+                        elif commit_hash in empty_set:
+                            # 标记空提交行 - 灰色背景
+                            for col in range(self.commit_table.columnCount()):
+                                item = self.commit_table.item(row, col)
+                                if item:
+                                    item.setBackground(QColor('#f0f0f0'))
+                                    if col == 1:  # Hash 列添加空提交标记
+                                        item.setText(f'∅ {commit_hash}')
+                                        item.setToolTip('此提交内容已存在，将自动跳过')
+                        else:
+                            # 清除之前的标记
+                            for col in range(self.commit_table.columnCount()):
+                                item = self.commit_table.item(row, col)
+                                if item:
+                                    item.setBackground(QColor('transparent'))
+                                    if col == 1:
+                                        item.setText(commit_hash)
+                                        item.setToolTip('')
+
+            # 构建状态消息
+            status_parts = []
             if conflicts:
-                conflict_msg = f'检测到 {len(conflicts)} 个提交可能存在冲突: {", ".join(conflicts[:3])}'
-                if len(conflicts) > 3:
-                    conflict_msg += f' ...等 {len(conflicts)} 个'
-                self.dry_run_status_label.setText(f'⚠️ {conflict_msg}')
-                self.dry_run_status_label.setStyleSheet('color: #e74c3c; font-size: 12px; padding: 5px;')
-                self._set_execute_button_conflict(True, conflict_msg)
+                conflict_msg = f'{len(conflicts)} 个冲突'
+                status_parts.append(f'⚠️ {conflict_msg}')
+            if empty_commits:
+                empty_msg = f'{len(empty_commits)} 个已存在（将跳过）'
+                status_parts.append(f'∅ {empty_msg}')
+
+            if status_parts:
+                self.dry_run_status_label.setText(' | '.join(status_parts))
+                if conflicts:
+                    self.dry_run_status_label.setStyleSheet('color: #e74c3c; font-size: 12px; padding: 5px;')
+                else:
+                    self.dry_run_status_label.setStyleSheet('color: #7f8c8d; font-size: 12px; padding: 5px;')
             else:
                 self.dry_run_status_label.setText('✅ 预检通过，未检测到冲突')
                 self.dry_run_status_label.setStyleSheet('color: #27ae60; font-size: 12px; padding: 5px;')
-                self._set_execute_button_conflict(False)
+
+            self._set_execute_button_conflict(False)
 
         run_blocking(_do_dry_run, on_success=on_dry_run_done, parent=self)
 

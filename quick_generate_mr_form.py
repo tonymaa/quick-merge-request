@@ -5,17 +5,27 @@ import subprocess
 
 def run_command(command, directory):
     try:
-        result = subprocess.run(command, cwd=directory, capture_output=True, text=True, check=True, shell=False)
+        result = subprocess.run(command, cwd=directory, capture_output=True, text=True, check=True, shell=False, encoding='utf-8', errors='replace')
         return result.stdout, None
     except subprocess.CalledProcessError as e:
         return None, e.stderr
+
+def _clean_branch_name(branch):
+    """清理分支名，去除 git branch 输出的前缀标记"""
+    branch = branch.strip()
+    # 去除当前分支标记 (*) 和 worktree 检出分支标记 (+)
+    if branch.startswith('* '):
+        branch = branch[2:]
+    elif branch.startswith('+ '):
+        branch = branch[2:]
+    return branch
 
 def get_local_branches(directory):
     stdout, stderr = run_command(['git', 'branch'], directory)
     if stderr:
         return [], f"Error loading branches:\n{stderr}"
     branches = stdout.strip().split('\n')
-    valid_branches = [b.strip().replace('* ', '') for b in branches if '__from__' in b]
+    valid_branches = [_clean_branch_name(b) for b in branches if '__from__' in b]
     return valid_branches, "Branches loaded."
 
 def get_all_local_branches(directory):
@@ -23,7 +33,7 @@ def get_all_local_branches(directory):
     if stderr:
         return [], f"Error loading branches:\n{stderr}"
     branches = stdout.strip().split('\n')
-    all_branches = [b.strip().replace('* ', '') for b in branches if b.strip()]
+    all_branches = [_clean_branch_name(b) for b in branches if b.strip()]
     return all_branches, "All branches loaded."
 
 def get_mr_defaults(project_path, source_branch, title_template, description_template):
