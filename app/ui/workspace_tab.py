@@ -1795,11 +1795,11 @@ class WorkspaceTab(QWidget):
             self.commit_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
             self.commit_table.setSelectionBehavior(QAbstractItemView.SelectRows)
             self.commit_table.verticalHeader().setVisible(False)
+            self.commit_table.setShowGrid(False)  # 隐藏网格线
             self.commit_table.setStyleSheet('''
                 QTableWidget {
                     border: 1px solid #ddd;
                     border-radius: 4px;
-                    gridline-mode: none;
                 }
                 QTableWidget::item {
                     padding: 8px;
