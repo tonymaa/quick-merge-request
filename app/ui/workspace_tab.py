@@ -1500,7 +1500,7 @@ class WorkspaceTab(QWidget):
             for row in range(self.commit_table.rowCount()):
                 hash_item = self.commit_table.item(row, 1)
                 if hash_item:
-                    commit_hash = hash_item.text().replace('⚠️ ', '')
+                    commit_hash = hash_item.text().replace('⚠️ ', '').replace('∅ ', '')
                     for col in range(self.commit_table.columnCount()):
                         item = self.commit_table.item(row, col)
                         if item:
@@ -1639,24 +1639,25 @@ class WorkspaceTab(QWidget):
                 for row in range(self.commit_table.rowCount()):
                     hash_item = self.commit_table.item(row, 1)
                     if hash_item:
-                        commit_hash = hash_item.text()
-                        if commit_hash in conflict_set:
+                        # 清理可能存在的标记前缀
+                        raw_hash = hash_item.text().replace('⚠️ ', '').replace('∅ ', '')
+                        if raw_hash in conflict_set:
                             # 标记冲突行 - 红色背景
                             for col in range(self.commit_table.columnCount()):
                                 item = self.commit_table.item(row, col)
                                 if item:
                                     item.setBackground(QColor('#ffcccc'))
                                     if col == 1:  # Hash 列添加冲突标记
-                                        item.setText(f'⚠️ {commit_hash}')
+                                        item.setText(f'⚠️ {raw_hash}')
                                         item.setToolTip('此提交可能存在冲突')
-                        elif commit_hash in empty_set:
-                            # 标记空提交行 - 灰色背景
+                        elif raw_hash in empty_set:
+                            # 标记空提交行 - 深灰色背景
                             for col in range(self.commit_table.columnCount()):
                                 item = self.commit_table.item(row, col)
                                 if item:
-                                    item.setBackground(QColor('#f0f0f0'))
+                                    item.setBackground(QColor('#d0d0d0'))
                                     if col == 1:  # Hash 列添加空提交标记
-                                        item.setText(f'∅ {commit_hash}')
+                                        item.setText(f'∅ {raw_hash}')
                                         item.setToolTip('此提交内容已存在，将自动跳过')
                         else:
                             # 清除之前的标记
@@ -1665,7 +1666,7 @@ class WorkspaceTab(QWidget):
                                 if item:
                                     item.setBackground(QColor('transparent'))
                                     if col == 1:
-                                        item.setText(commit_hash)
+                                        item.setText(raw_hash)
                                         item.setToolTip('')
 
             # 构建状态消息
