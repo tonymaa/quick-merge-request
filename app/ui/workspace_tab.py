@@ -1589,7 +1589,19 @@ class WorkspaceTab(QWidget):
                                 timeout=10
                             )
                         else:
-                            # 成功，重置更改
+                            # 成功，检查是否有实际更改（可能是空提交）
+                            status_result = subprocess.run(
+                                ['git', 'status', '--porcelain'],
+                                cwd=temp_dir,
+                                capture_output=True,
+                                text=True,
+                                timeout=10
+                            )
+                            if not status_result.stdout.strip():
+                                # 没有更改，说明提交内容已存在
+                                empty_commits.append(commit_hash[:8])
+
+                            # 重置更改
                             subprocess.run(
                                 ['git', 'reset', '--hard', 'HEAD'],
                                 cwd=temp_dir,
