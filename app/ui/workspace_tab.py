@@ -1601,13 +1601,13 @@ class WorkspaceTab(QWidget):
                                 # 没有更改，说明提交内容已存在
                                 empty_commits.append(commit_hash[:8])
 
-                            # 重置更改
-                            subprocess.run(
-                                ['git', 'reset', '--hard', 'HEAD'],
-                                cwd=temp_dir,
-                                capture_output=True,
-                                timeout=10
-                            )
+                        # 确保每次都重置到干净状态（无论成功还是失败）
+                        subprocess.run(
+                            ['git', 'reset', '--hard', 'HEAD'],
+                            cwd=temp_dir,
+                            capture_output=True,
+                            timeout=10
+                        )
 
                     return {'success': True, 'conflicts': conflicts, 'empty_commits': empty_commits}
 
