@@ -1435,10 +1435,8 @@ class WorkspaceTab(QWidget):
         # 更新按钮状态
         self.branch_mgmt_local_btn.setChecked(mode == 'local')
         self.branch_mgmt_remote_btn.setChecked(mode == 'remote')
-        # 重置过滤器
+        # 只清空搜索文本，保留前缀和时间过滤条件
         self.branch_mgmt_text_filter.setText('')
-        self.branch_mgmt_time_combo.setCurrentIndex(0)
-        self.branch_mgmt_prefix_combo.setCurrentIndex(0)
         # 重新加载数据
         self.run_branch_mgmt_refresh()
 
