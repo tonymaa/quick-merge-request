@@ -1295,6 +1295,7 @@ class WorkspaceTab(QWidget):
             ['全部', '今天', '7天内', '30天内', '90天内', '超过30天', '超过90天']
         )
         self.branch_mgmt_time_combo.setMinimumWidth(120)
+        self.branch_mgmt_time_combo.setCurrentIndex(5)  # 默认"超过30天"
         self.branch_mgmt_time_combo.currentIndexChanged.connect(self.apply_branch_mgmt_filters)
 
         top_layout.addWidget(self.branch_mgmt_text_filter, stretch=3)
@@ -1523,10 +1524,19 @@ class WorkspaceTab(QWidget):
         for p in sorted(prefixes):
             self.branch_mgmt_prefix_combo.addItem(p)
 
-        # 尝试恢复之前的选择
-        idx = self.branch_mgmt_prefix_combo.findText(current_prefix)
-        if idx >= 0:
-            self.branch_mgmt_prefix_combo.setCurrentIndex(idx)
+        # 选择优先级：之前的选 > 配置中的前缀 > 全部
+        idx = -1
+        if current_prefix and current_prefix != '(全部前缀)':
+            idx = self.branch_mgmt_prefix_combo.findText(current_prefix)
+        if idx < 0:
+            # 从配置中提取前缀（如 "zhiming/{tab_name}_" → "zhiming"）
+            config_prefix = self.get_default_new_branch_prefix()
+            if config_prefix and '/' in config_prefix:
+                config_prefix = config_prefix.split('/')[0]
+                idx = self.branch_mgmt_prefix_combo.findText(config_prefix)
+        if idx < 0:
+            idx = 0
+        self.branch_mgmt_prefix_combo.setCurrentIndex(idx)
         self.branch_mgmt_prefix_combo.blockSignals(False)
 
     def _populate_branch_mgmt_table(self, branches):
