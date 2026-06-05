@@ -1,6 +1,7 @@
 import shelve
 import time
 import xml.etree.ElementTree as ET
+from datetime import datetime
 from PyQt5.QtWidgets import (
     QCheckBox,
     QWidget, QTabWidget, QFormLayout, QLineEdit, QHBoxLayout, QPushButton,
@@ -16,7 +17,8 @@ from quick_create_branch import create_branch as create_branch_func, get_remote_
 from quick_generate_mr_form import (
     get_local_branches, get_all_local_branches, generate_mr, get_mr_defaults,
     parse_target_branch_from_source, get_gitlab_usernames, get_branch_diff,
-    get_commits_between_branches
+    get_commits_between_branches, get_branch_details, get_branches_no_merged,
+    get_remote_branch_details, get_remote_url
 )
 from app.widgets import NoWheelComboBox, enable_combo_search as util_enable_combo_search
 from PyQt5.QtWidgets import QScrollArea, QLabel
@@ -494,14 +496,19 @@ class WorkspaceTab(QWidget):
         self.create_branch_tab = QWidget()
         self.create_mr_tab = QWidget()
         self.cherry_pick_tab = QWidget()
+        self.branch_mgmt_tab = QWidget()
 
         self.tools_tabs.addTab(self.create_branch_tab, '创建分支')
         self.tools_tabs.addTab(self.cherry_pick_tab, '快速Cherry-pick')
         self.tools_tabs.addTab(self.create_mr_tab, '创建合并请求')
+        self.tools_tabs.addTab(self.branch_mgmt_tab, '分支管理')
 
         self.init_create_branch_tab()
         self.init_create_mr_tab()
         self.init_cherry_pick_tab()
+        self.init_branch_mgmt_tab()
+
+        self.tools_tabs.currentChanged.connect(self._on_tools_tab_changed)
 
         layout = QVBoxLayout()
         layout.addWidget(self.tools_tabs)
@@ -684,6 +691,7 @@ class WorkspaceTab(QWidget):
             self.run_refresh_branches()
             self.run_refresh_mr_target_branches()
             self.run_refresh_users()
+            self.run_branch_mgmt_refresh()
             self.initialized = True
 
     def get_default_new_branch_prefix(self, tab_name=None):
@@ -1214,6 +1222,872 @@ class WorkspaceTab(QWidget):
         self.start_background_prefetch()
         # 立即显示本地数据
         self.load_local_branches_immediately()
+
+    # ─────────────────────── 分支管理 Tab ───────────────────────
+
+    def init_branch_mgmt_tab(self):
+        """构建分支管理 tab：过滤器 + 表格 + 操作栏"""
+        # 数据存储
+        self._branch_mgmt_all_data = []
+        self._branch_mgmt_checkboxes = []  # [(checkbox_widget, branch_dict), ...]
+        self._branch_mgmt_current_branch = ''
+        self._branch_mgmt_protected_branches = set()
+        self._branch_mgmt_mode = 'local'  # 'local' 或 'remote'
+        self._branch_mgmt_deleting = False  # 删除进行中标记
+        self._branch_mgmt_cancel_flag = False  # 删除取消标记
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        # ── 模式切换 + 过滤器区域 ──
+        top_layout = QHBoxLayout()
+        top_layout.setSpacing(8)
+
+        # 本地/远程切换按钮组
+        self.branch_mgmt_local_btn = QPushButton('本地分支')
+        self.branch_mgmt_local_btn.setCheckable(True)
+        self.branch_mgmt_local_btn.setChecked(True)
+        self.branch_mgmt_local_btn.setStyleSheet('''
+            QPushButton {
+                background: rgb(22,119,255); color: white; border: none;
+                border-radius: 4px; padding: 6px 16px; font-weight: bold;
+            }
+            QPushButton:!checked {
+                background: #f5f5f5; color: #555; border: 1px solid #ddd;
+                border-radius: 4px; padding: 6px 16px; font-weight: normal;
+            }
+            QPushButton:!checked:hover { background: #e8e8e8; }
+        ''')
+        self.branch_mgmt_local_btn.clicked.connect(lambda: self._switch_branch_mgmt_mode('local'))
+
+        self.branch_mgmt_remote_btn = QPushButton('远程分支')
+        self.branch_mgmt_remote_btn.setCheckable(True)
+        self.branch_mgmt_remote_btn.setChecked(False)
+        self.branch_mgmt_remote_btn.setStyleSheet('''
+            QPushButton {
+                background: rgb(22,119,255); color: white; border: none;
+                border-radius: 4px; padding: 6px 16px; font-weight: bold;
+            }
+            QPushButton:!checked {
+                background: #f5f5f5; color: #555; border: 1px solid #ddd;
+                border-radius: 4px; padding: 6px 16px; font-weight: normal;
+            }
+            QPushButton:!checked:hover { background: #e8e8e8; }
+        ''')
+        self.branch_mgmt_remote_btn.clicked.connect(lambda: self._switch_branch_mgmt_mode('remote'))
+
+        top_layout.addWidget(self.branch_mgmt_local_btn)
+        top_layout.addWidget(self.branch_mgmt_remote_btn)
+        top_layout.addSpacing(12)
+
+        self.branch_mgmt_text_filter = QLineEdit()
+        self.branch_mgmt_text_filter.setPlaceholderText('搜索分支名...')
+        self.branch_mgmt_text_filter.textChanged.connect(self.apply_branch_mgmt_filters)
+
+        self.branch_mgmt_prefix_combo = NoWheelComboBox()
+        self.branch_mgmt_prefix_combo.addItem('(全部前缀)')
+        self.branch_mgmt_prefix_combo.setMinimumWidth(140)
+        self.branch_mgmt_prefix_combo.currentIndexChanged.connect(self.apply_branch_mgmt_filters)
+
+        self.branch_mgmt_time_combo = NoWheelComboBox()
+        self.branch_mgmt_time_combo.addItems(
+            ['全部', '今天', '7天内', '30天内', '90天内', '超过30天', '超过90天']
+        )
+        self.branch_mgmt_time_combo.setMinimumWidth(120)
+        self.branch_mgmt_time_combo.currentIndexChanged.connect(self.apply_branch_mgmt_filters)
+
+        top_layout.addWidget(self.branch_mgmt_text_filter, stretch=3)
+        top_layout.addWidget(QLabel('前缀:'))
+        top_layout.addWidget(self.branch_mgmt_prefix_combo, stretch=1)
+        top_layout.addWidget(QLabel('时间:'))
+        top_layout.addWidget(self.branch_mgmt_time_combo, stretch=1)
+
+        layout.addLayout(top_layout)
+
+        # ── 分支表格 ──
+        self.branch_mgmt_table = QTableWidget()
+        self.branch_mgmt_table.setColumnCount(6)
+        self.branch_mgmt_table.setHorizontalHeaderLabels(
+            ['', '分支名', '最后提交时间', '提交者', '最后提交信息', '已合并']
+        )
+        self.branch_mgmt_table.setAlternatingRowColors(True)
+        self.branch_mgmt_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.branch_mgmt_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.branch_mgmt_table.verticalHeader().setVisible(False)
+        self.branch_mgmt_table.setShowGrid(False)
+
+        header = self.branch_mgmt_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.Fixed)
+        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.Fixed)
+        header.setSectionResizeMode(3, QHeaderView.Fixed)
+        header.setSectionResizeMode(4, QHeaderView.Stretch)
+        header.setSectionResizeMode(5, QHeaderView.Fixed)
+        self.branch_mgmt_table.setColumnWidth(0, 40)
+        self.branch_mgmt_table.setColumnWidth(2, 150)
+        self.branch_mgmt_table.setColumnWidth(3, 100)
+        self.branch_mgmt_table.setColumnWidth(5, 60)
+
+        self.branch_mgmt_table.setStyleSheet('''
+            QTableWidget {
+                border: 1px solid #ddd;
+                border-radius: 4px;
+            }
+            QTableWidget::item {
+                padding: 6px;
+            }
+            QTableWidget::item:selected {
+                background: #e8f4fc;
+                color: #333;
+            }
+            QHeaderView::section {
+                background: #f5f5f5;
+                padding: 8px;
+                border-bottom: 2px solid #3498db;
+                font-weight: bold;
+            }
+        ''')
+
+        layout.addWidget(self.branch_mgmt_table)
+
+        # ── 操作栏 ──
+        action_layout = QHBoxLayout()
+        action_layout.setSpacing(8)
+
+        self.branch_mgmt_select_all_btn = QPushButton('全选')
+        self.branch_mgmt_select_all_btn.setStyleSheet('''
+            QPushButton {
+                background: #f5f5f5; border: 1px solid #ddd; border-radius: 4px;
+                padding: 6px 14px; color: #555;
+            }
+            QPushButton:hover { background: #e8e8e8; }
+        ''')
+        self.branch_mgmt_select_all_btn.clicked.connect(self.branch_mgmt_select_all)
+
+        self.branch_mgmt_invert_btn = QPushButton('反选')
+        self.branch_mgmt_invert_btn.setStyleSheet('''
+            QPushButton {
+                background: #f5f5f5; border: 1px solid #ddd; border-radius: 4px;
+                padding: 6px 14px; color: #555;
+            }
+            QPushButton:hover { background: #e8e8e8; }
+        ''')
+        self.branch_mgmt_invert_btn.clicked.connect(self.branch_mgmt_invert_selection)
+
+        self.branch_mgmt_refresh_btn = QPushButton('刷新')
+        self.branch_mgmt_refresh_btn.setStyleSheet('''
+            QPushButton {
+                background: #f5f5f5; border: 1px solid #ddd; border-radius: 4px;
+                padding: 6px 14px; color: #555;
+            }
+            QPushButton:hover { background: #e8e8e8; }
+        ''')
+        self.branch_mgmt_refresh_btn.clicked.connect(self.run_branch_mgmt_refresh)
+
+        self.branch_mgmt_delete_btn = QPushButton('删除选中分支')
+        self.branch_mgmt_delete_btn.setStyleSheet('''
+            QPushButton {
+                background: #e74c3c; color: white; border: none; border-radius: 4px;
+                padding: 6px 16px; font-weight: bold;
+            }
+            QPushButton:hover { background: #c0392b; }
+            QPushButton:disabled { background: #bdc3c7; color: #ecf0f1; }
+        ''')
+        self.branch_mgmt_delete_btn.clicked.connect(self.run_branch_mgmt_delete)
+
+        # 取消删除按钮（默认隐藏，删除进行中显示）
+        self.branch_mgmt_cancel_btn = QPushButton('取消删除')
+        self.branch_mgmt_cancel_btn.setStyleSheet('''
+            QPushButton {
+                background: #7f8c8d; color: white; border: none; border-radius: 4px;
+                padding: 6px 16px; font-weight: bold;
+            }
+            QPushButton:hover { background: #636e72; }
+        ''')
+        self.branch_mgmt_cancel_btn.clicked.connect(self._cancel_branch_mgmt_delete)
+        self.branch_mgmt_cancel_btn.setVisible(False)
+
+        self.branch_mgmt_status_label = QLabel('已选 0 个分支 / 总计 0 个分支')
+        self.branch_mgmt_status_label.setStyleSheet('color: #7f8c8d; font-size: 12px;')
+
+        action_layout.addWidget(self.branch_mgmt_select_all_btn)
+        action_layout.addWidget(self.branch_mgmt_invert_btn)
+        action_layout.addSpacing(20)
+        action_layout.addWidget(self.branch_mgmt_refresh_btn)
+        action_layout.addWidget(self.branch_mgmt_delete_btn)
+        action_layout.addWidget(self.branch_mgmt_cancel_btn)
+        action_layout.addStretch()
+        action_layout.addWidget(self.branch_mgmt_status_label)
+
+        layout.addLayout(action_layout)
+
+        self.branch_mgmt_tab.setLayout(layout)
+
+    # ─────────────────────── 分支管理：数据加载 ───────────────────────
+
+    def _switch_branch_mgmt_mode(self, mode):
+        """切换本地/远程分支视图"""
+        if self._branch_mgmt_mode == mode:
+            return
+        self._branch_mgmt_mode = mode
+        # 更新按钮状态
+        self.branch_mgmt_local_btn.setChecked(mode == 'local')
+        self.branch_mgmt_remote_btn.setChecked(mode == 'remote')
+        # 重置过滤器
+        self.branch_mgmt_text_filter.setText('')
+        self.branch_mgmt_time_combo.setCurrentIndex(0)
+        self.branch_mgmt_prefix_combo.setCurrentIndex(0)
+        # 重新加载数据
+        self.run_branch_mgmt_refresh()
+
+    def run_branch_mgmt_refresh(self):
+        """异步加载分支详情并填充表格（根据当前模式加载本地或远程）"""
+        is_remote = self._branch_mgmt_mode == 'remote'
+        mode_label = '远程分支' if is_remote else '分支'
+        self.branch_mgmt_status_label.setText(f'正在加载{mode_label}...')
+        self.branch_mgmt_status_label.setStyleSheet('color: #3498db; font-size: 12px;')
+        QApplication.processEvents()
+
+        if is_remote:
+            fetch_func = get_remote_branch_details
+        else:
+            fetch_func = get_branch_details
+
+        def _fetch_data():
+            return fetch_func(self.path)
+
+        def on_success(result):
+            branches, error = result
+            if error or branches is None:
+                self.branch_mgmt_status_label.setText(f'加载失败: {error or "未知错误"}')
+                self.branch_mgmt_status_label.setStyleSheet('color: #e74c3c; font-size: 12px;')
+                return
+
+            self._branch_mgmt_all_data = branches
+
+            if is_remote:
+                # 远程模式：无当前分支概念，保护分支来自 config target_branch
+                self._branch_mgmt_current_branch = ''
+                protected = set()
+                if self.workspace_config is not None:
+                    for node in self.workspace_config.findall('target_branch'):
+                        if node.text:
+                            protected.add(node.text.strip())
+                self._branch_mgmt_protected_branches = protected
+            else:
+                # 本地模式：识别当前分支 + 保护分支
+                current = ''
+                for b in branches:
+                    if b.get('is_current'):
+                        current = b['name']
+                        break
+                self._branch_mgmt_current_branch = current
+                protected = set()
+                if self.workspace_config is not None:
+                    for node in self.workspace_config.findall('target_branch'):
+                        if node.text:
+                            protected.add(node.text.strip())
+                self._branch_mgmt_protected_branches = protected
+
+            # 填充前缀过滤器
+            self._populate_branch_mgmt_prefix_filter(branches)
+
+            # 应用当前过滤条件填充表格（如果无过滤则显示全部）
+            self.apply_branch_mgmt_filters()
+
+            # 本地模式才检查合并状态（远程分支不适用）
+            if not is_remote:
+                self._check_branch_merge_status()
+
+        def on_error(err):
+            self.branch_mgmt_status_label.setText(f'加载异常: {err}')
+            self.branch_mgmt_status_label.setStyleSheet('color: #e74c3c; font-size: 12px;')
+
+        run_blocking(_fetch_data, on_success=on_success, on_error=on_error, parent=self)
+
+    def _populate_branch_mgmt_prefix_filter(self, branches):
+        """从分支名中提取唯一前缀，填充前缀下拉框"""
+        current_prefix = self.branch_mgmt_prefix_combo.currentText()
+
+        prefixes = set()
+        for b in branches:
+            name = b['name']
+            if '/' in name:
+                prefix = name.split('/')[0]
+                prefixes.add(prefix)
+
+        self.branch_mgmt_prefix_combo.blockSignals(True)
+        self.branch_mgmt_prefix_combo.clear()
+        self.branch_mgmt_prefix_combo.addItem('(全部前缀)')
+        for p in sorted(prefixes):
+            self.branch_mgmt_prefix_combo.addItem(p)
+
+        # 尝试恢复之前的选择
+        idx = self.branch_mgmt_prefix_combo.findText(current_prefix)
+        if idx >= 0:
+            self.branch_mgmt_prefix_combo.setCurrentIndex(idx)
+        self.branch_mgmt_prefix_combo.blockSignals(False)
+
+    def _populate_branch_mgmt_table(self, branches):
+        """填充分支管理表格"""
+        self._branch_mgmt_checkboxes = []
+        self.branch_mgmt_table.setRowCount(len(branches))
+
+        protected = self._branch_mgmt_protected_branches
+        current = self._branch_mgmt_current_branch
+
+        for row, branch in enumerate(branches):
+            name = branch['name']
+            is_current = name == current
+            is_protected = name in protected
+            is_disabled = is_current or is_protected
+
+            # 列 0: Checkbox
+            checkbox = QCheckBox()
+            checkbox.setEnabled(not is_disabled)
+            checkbox_widget = QWidget()
+            cb_layout = QHBoxLayout(checkbox_widget)
+            cb_layout.addWidget(checkbox)
+            cb_layout.setAlignment(Qt.AlignCenter)
+            cb_layout.setContentsMargins(0, 0, 0, 0)
+            self.branch_mgmt_table.setCellWidget(row, 0, checkbox_widget)
+
+            # 列 1: 分支名
+            name_item = QTableWidgetItem(name)
+            if is_current:
+                font = name_item.font()
+                font.setBold(True)
+                name_item.setFont(font)
+                name_item.setToolTip('当前分支（不可删除）')
+            elif is_protected:
+                name_item.setToolTip(f'保护分支（配置中的 target_branch）')
+            self.branch_mgmt_table.setItem(row, 1, name_item)
+
+            # 列 2: 最后提交时间（截取前19字符）
+            date_str = branch.get('last_commit_date', '')
+            display_date = date_str[:19] if len(date_str) >= 19 else date_str
+            date_item = QTableWidgetItem(display_date)
+            date_item.setData(Qt.UserRole, date_str)  # 保存完整日期用于过滤
+            self.branch_mgmt_table.setItem(row, 2, date_item)
+
+            # 列 3: 提交者
+            author = branch.get('author', '')
+            self.branch_mgmt_table.setItem(row, 3, QTableWidgetItem(author))
+
+            # 列 4: 最后提交信息（截断+tooltip）
+            subject = branch.get('subject', '')
+            subject_item = QTableWidgetItem(
+                subject[:50] + '...' if len(subject) > 50 else subject
+            )
+            subject_item.setToolTip(subject)
+            self.branch_mgmt_table.setItem(row, 4, subject_item)
+
+            # 列 5: 已合并状态（初始为 '--'）
+            merge_item = QTableWidgetItem('--')
+            merge_item.setTextAlignment(Qt.AlignCenter)
+            self.branch_mgmt_table.setItem(row, 5, merge_item)
+
+            # 行背景色
+            if is_current:
+                for col in range(6):
+                    item = self.branch_mgmt_table.item(row, col)
+                    if item:
+                        item.setBackground(QColor('#e8f4fc'))
+            elif is_protected:
+                for col in range(6):
+                    item = self.branch_mgmt_table.item(row, col)
+                    if item:
+                        item.setBackground(QColor('#fff8e1'))
+
+            # 设置行高
+            self.branch_mgmt_table.setRowHeight(row, 35)
+
+            # 连接 checkbox 状态变化
+            checkbox.stateChanged.connect(self._update_branch_mgmt_status)
+            self._branch_mgmt_checkboxes.append((checkbox, branch))
+
+        self._update_branch_mgmt_status()
+
+    def _check_branch_merge_status(self):
+        """异步检查分支合并状态并更新表格第5列"""
+        if self.workspace_config is None:
+            return
+        target_branches = [
+            node.text.strip()
+            for node in self.workspace_config.findall('target_branch')
+            if node.text
+        ]
+        if not target_branches:
+            return
+
+        directory = self.path
+
+        def _check():
+            # 对每个目标分支获取未合并分支集合
+            # 合并所有目标的未合并集合：不在集合中的 = 已合并到所有目标
+            all_unmerged = set()
+            for target in target_branches:
+                unmerged, err = get_branches_no_merged(directory, target)
+                if err:
+                    continue
+                all_unmerged |= unmerged
+            return all_unmerged
+
+        def on_success(unmerged_result):
+            for row, (checkbox, branch) in enumerate(self._branch_mgmt_checkboxes):
+                name = branch['name']
+                merge_item = self.branch_mgmt_table.item(row, 5)
+                if merge_item is None:
+                    continue
+                if name not in unmerged_result:
+                    merge_item.setText('✓')
+                    merge_item.setForeground(QColor('#27ae60'))
+                    merge_item.setToolTip('已合并到所有目标分支')
+                else:
+                    merge_item.setText('✗')
+                    merge_item.setForeground(QColor('#e74c3c'))
+                    merge_item.setToolTip('未合并到部分目标分支')
+
+        def on_error(err):
+            # 合并状态检查失败不影响主功能，仅静默记录
+            pass
+
+        run_blocking(_check, on_success=on_success, on_error=on_error, parent=self)
+
+    # ─────────────────────── 分支管理：过滤 ───────────────────────
+
+    def apply_branch_mgmt_filters(self):
+        """根据三个过滤条件在内存中过滤分支数据"""
+        all_data = self._branch_mgmt_all_data
+        if not all_data:
+            return
+
+        # 文本过滤
+        keyword = self.branch_mgmt_text_filter.text().strip().lower()
+        # 前缀过滤
+        prefix_idx = self.branch_mgmt_prefix_combo.currentIndex()
+        selected_prefix = (
+            self.branch_mgmt_prefix_combo.currentText()
+            if prefix_idx > 0 else ''
+        )
+        # 时间过滤
+        time_idx = self.branch_mgmt_time_combo.currentIndex()
+        now = datetime.now()
+
+        filtered = []
+        for branch in all_data:
+            name = branch['name']
+
+            # 文本关键字
+            if keyword and keyword not in name.lower():
+                continue
+
+            # 前缀
+            if selected_prefix and not name.startswith(selected_prefix + '/'):
+                continue
+
+            # 时间范围
+            if time_idx > 0:  # 0 = 全部
+                date_str = branch.get('last_commit_date', '')
+                if not date_str:
+                    continue
+                try:
+                    # 解析 ISO 8601: "2026-06-01 14:30:00 +0800"
+                    branch_date = datetime.strptime(date_str[:19], '%Y-%m-%d %H:%M:%S')
+                    days_diff = (now - branch_date).days
+                except (ValueError, IndexError):
+                    continue
+
+                if time_idx == 1:  # 今天
+                    if days_diff >= 1:
+                        continue
+                elif time_idx == 2:  # 7天内
+                    if days_diff >= 7:
+                        continue
+                elif time_idx == 3:  # 30天内
+                    if days_diff >= 30:
+                        continue
+                elif time_idx == 4:  # 90天内
+                    if days_diff >= 90:
+                        continue
+                elif time_idx == 5:  # 超过30天
+                    if days_diff < 30:
+                        continue
+                elif time_idx == 6:  # 超过90天
+                    if days_diff < 90:
+                        continue
+
+            filtered.append(branch)
+
+        self._populate_branch_mgmt_table(filtered)
+
+    # ─────────────────────── 分支管理：选择操作 ───────────────────────
+
+    def branch_mgmt_select_all(self):
+        """全选所有可操作的分支"""
+        for checkbox, _ in self._branch_mgmt_checkboxes:
+            if checkbox.isEnabled():
+                checkbox.setChecked(True)
+        self._update_branch_mgmt_status()
+
+    def branch_mgmt_invert_selection(self):
+        """反选所有可操作的分支"""
+        for checkbox, _ in self._branch_mgmt_checkboxes:
+            if checkbox.isEnabled():
+                checkbox.setChecked(not checkbox.isChecked())
+        self._update_branch_mgmt_status()
+
+    def _update_branch_mgmt_status(self):
+        """更新底部状态标签"""
+        total = len(self._branch_mgmt_checkboxes)
+        selected = sum(
+            1 for cb, _ in self._branch_mgmt_checkboxes
+            if cb.isChecked() and cb.isEnabled()
+        )
+        self.branch_mgmt_status_label.setText(
+            f'已选 {selected} 个分支 / 总计 {total} 个分支'
+        )
+        self.branch_mgmt_status_label.setStyleSheet('color: #7f8c8d; font-size: 12px;')
+        # 无选中时禁用删除按钮
+        self.branch_mgmt_delete_btn.setEnabled(selected > 0)
+
+    # ─────────────────────── 分支管理：删除 ───────────────────────
+
+    def run_branch_mgmt_delete(self):
+        """批量删除选中的分支，带实时进度的对话框"""
+        import subprocess
+
+        # 收集选中分支
+        selected_branches = []
+        for checkbox, branch in self._branch_mgmt_checkboxes:
+            if checkbox.isChecked() and checkbox.isEnabled():
+                selected_branches.append(branch)
+
+        if not selected_branches:
+            QMessageBox.warning(self.branch_mgmt_tab, '提示', '未选择任何分支')
+            return
+
+        is_remote = self._branch_mgmt_mode == 'remote'
+        branch_type = '远程' if is_remote else '本地'
+
+        # ── 构建对话框 ──
+        dialog = QDialog(self.branch_mgmt_tab)
+        dialog.setWindowTitle(f'删除{branch_type}分支')
+        dialog.setMinimumWidth(600)
+        dialog.setMinimumHeight(300)
+        dialog.setMaximumHeight(650)
+
+        # 删除进行中禁止关闭
+        dialog._deleting = False
+
+        def close_event(event):
+            if dialog._deleting:
+                event.ignore()
+            else:
+                event.accept()
+
+        dialog.closeEvent = close_event
+
+        dlg_layout = QVBoxLayout(dialog)
+        dlg_layout.setSpacing(10)
+
+        # 标题
+        title_label = QLabel(
+            f'确认删除以下 {len(selected_branches)} 个{branch_type}分支？'
+        )
+        title_label.setWordWrap(True)
+        title_label.setStyleSheet('font-weight: bold; font-size: 13px;')
+        dlg_layout.addWidget(title_label)
+
+        # 进度标签
+        progress_label = QLabel('')
+        progress_label.setStyleSheet('color: #7f8c8d; font-size: 12px;')
+        progress_label.setVisible(False)
+        dlg_layout.addWidget(progress_label)
+
+        # 可滚动的分支列表
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet('QScrollArea { border: 1px solid #ddd; border-radius: 4px; }')
+
+        list_widget = QWidget()
+        list_layout = QVBoxLayout(list_widget)
+        list_layout.setContentsMargins(8, 8, 8, 8)
+        list_layout.setSpacing(3)
+
+        # 每行的控件引用，用于后续更新状态
+        row_widgets = []
+        for b in selected_branches:
+            row = QHBoxLayout()
+            row.setSpacing(6)
+
+            status_label = QLabel('  ')
+            status_label.setFixedWidth(20)
+            status_label.setAlignment(Qt.AlignCenter)
+
+            name_label = QLabel(b['name'])
+            name_label.setStyleSheet('font-weight: bold; font-size: 12px;')
+            name_label.setMinimumWidth(200)
+
+            date_str = b.get('last_commit_date', '')[:10]
+            subject = b.get('subject', '')
+            subject_display = subject[:35] + '...' if len(subject) > 35 else subject
+            info_label = QLabel(f'{subject_display}  ({date_str})')
+            info_label.setStyleSheet('color: #7f8c8d; font-size: 11px;')
+
+            row.addWidget(status_label)
+            row.addWidget(name_label)
+            row.addWidget(info_label)
+            row.addStretch()
+            list_layout.addLayout(row)
+            row_widgets.append((status_label, name_label, b))
+
+        list_layout.addStretch()
+        scroll.setWidget(list_widget)
+        dlg_layout.addWidget(scroll)
+
+        # ── 按钮栏 ──
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+
+        # 确认阶段按钮
+        confirm_buttons = []
+
+        if is_remote:
+            confirm_btn = QPushButton(f'确认删除 ({len(selected_branches)} 个)')
+            confirm_btn.setStyleSheet('''
+                QPushButton {
+                    background: #e74c3c; color: white; border: none;
+                    border-radius: 4px; padding: 8px 16px; font-weight: bold;
+                }
+                QPushButton:hover { background: #c0392b; }
+            ''')
+            confirm_buttons.append(('force', confirm_btn))
+        else:
+            safe_btn = QPushButton(f'安全删除 ({len(selected_branches)} 个)')
+            safe_btn.setStyleSheet('''
+                QPushButton {
+                    background: #f39c12; color: white; border: none;
+                    border-radius: 4px; padding: 8px 16px; font-weight: bold;
+                }
+                QPushButton:hover { background: #e67e22; }
+            ''')
+            force_btn = QPushButton(f'强制删除 ({len(selected_branches)} 个)')
+            force_btn.setStyleSheet('''
+                QPushButton {
+                    background: #e74c3c; color: white; border: none;
+                    border-radius: 4px; padding: 8px 16px; font-weight: bold;
+                }
+                QPushButton:hover { background: #c0392b; }
+            ''')
+            confirm_buttons.append(('safe', safe_btn))
+            confirm_buttons.append(('force', force_btn))
+
+        cancel_confirm_btn = QPushButton('取消')
+        cancel_confirm_btn.setStyleSheet('''
+            QPushButton {
+                background: #f5f5f5; border: 1px solid #ddd; border-radius: 4px;
+                padding: 8px 16px; color: #555;
+            }
+            QPushButton:hover { background: #e8e8e8; }
+        ''')
+
+        for _, btn in confirm_buttons:
+            btn_layout.addWidget(btn)
+        btn_layout.addWidget(cancel_confirm_btn)
+
+        # 删除阶段按钮（初始隐藏）
+        cancel_delete_btn = QPushButton('取消删除')
+        cancel_delete_btn.setStyleSheet('''
+            QPushButton {
+                background: #7f8c8d; color: white; border: none; border-radius: 4px;
+                padding: 8px 16px; font-weight: bold;
+            }
+            QPushButton:hover { background: #636e72; }
+        ''')
+        cancel_delete_btn.setVisible(False)
+
+        close_btn = QPushButton('关闭')
+        close_btn.setStyleSheet('''
+            QPushButton {
+                background: #f5f5f5; border: 1px solid #ddd; border-radius: 4px;
+                padding: 8px 16px; color: #555;
+            }
+            QPushButton:hover { background: #e8e8e8; }
+        ''')
+        close_btn.setVisible(False)
+
+        btn_layout.addWidget(cancel_delete_btn)
+        btn_layout.addWidget(close_btn)
+        dlg_layout.addLayout(btn_layout)
+
+        # ── 交互逻辑 ──
+        delete_mode = {'action': 'cancel'}
+        cancel_flag = [False]
+
+        def start_delete(action):
+            delete_mode['action'] = action
+            # 隐藏确认按钮，显示取消删除按钮
+            for _, btn in confirm_buttons:
+                btn.setVisible(False)
+            cancel_confirm_btn.setVisible(False)
+            cancel_delete_btn.setVisible(True)
+            cancel_delete_btn.setEnabled(True)
+            cancel_delete_btn.setText('取消删除')
+            title_label.setText(f'正在删除{branch_type}分支...')
+            title_label.setStyleSheet('font-weight: bold; font-size: 13px; color: #f39c12;')
+            progress_label.setVisible(True)
+            dialog._deleting = True
+
+            # 在主线程逐个执行，每删一个刷新 UI
+            flag = '-D' if action == 'force' else '-d'
+            directory = self.path
+
+            deleted_count = 0
+            failed_count = 0
+
+            for i, (status_lbl, name_lbl, branch) in enumerate(row_widgets):
+                # 检查取消
+                if cancel_flag[0]:
+                    # 剩余的标记为跳过
+                    for j in range(i, len(row_widgets)):
+                        s, n, _ = row_widgets[j]
+                        s.setText('–')
+                        s.setStyleSheet('color: #7f8c8d; font-size: 14px;')
+                    break
+
+                name = branch['name']
+                progress_label.setText(f'正在处理 {i + 1}/{len(row_widgets)}: {name}')
+                name_lbl.setStyleSheet('font-weight: bold; font-size: 12px; color: #f39c12;')
+                QApplication.processEvents()
+
+                # 执行删除
+                try:
+                    if is_remote:
+                        cmd = ['git', 'push', 'origin', '--delete', name]
+                    else:
+                        cmd = ['git', 'branch', flag, name]
+
+                    result_del = subprocess.run(
+                        cmd, cwd=directory, capture_output=True, text=True,
+                        encoding='utf-8', errors='replace'
+                    )
+                    if result_del.returncode == 0:
+                        status_lbl.setText('✓')
+                        status_lbl.setStyleSheet('color: #27ae60; font-size: 14px; font-weight: bold;')
+                        name_lbl.setStyleSheet('font-weight: bold; font-size: 12px; color: #27ae60; text-decoration: line-through;')
+                        deleted_count += 1
+                    else:
+                        status_lbl.setText('✗')
+                        status_lbl.setStyleSheet('color: #e74c3c; font-size: 14px; font-weight: bold;')
+                        name_lbl.setStyleSheet('font-weight: bold; font-size: 12px; color: #e74c3c;')
+                        name_lbl.setToolTip(result_del.stderr.strip()[:200])
+                        failed_count += 1
+                except Exception as e:
+                    status_lbl.setText('✗')
+                    status_lbl.setStyleSheet('color: #e74c3c; font-size: 14px; font-weight: bold;')
+                    name_lbl.setStyleSheet('font-weight: bold; font-size: 12px; color: #e74c3c;')
+                    name_lbl.setToolTip(str(e)[:200])
+                    failed_count += 1
+
+                QApplication.processEvents()
+
+            # ── 删除完成 ──
+            dialog._deleting = False
+            cancel_delete_btn.setVisible(False)
+
+            skipped = len(row_widgets) - deleted_count - failed_count
+
+            summary_parts = []
+            if deleted_count:
+                summary_parts.append(f'✓ 成功 {deleted_count}')
+            if failed_count:
+                summary_parts.append(f'✗ 失败 {failed_count}')
+            if skipped:
+                summary_parts.append(f'– 跳过 {skipped}')
+            summary_text = '  '.join(summary_parts)
+
+            if failed_count or skipped:
+                title_label.setText(f'删除完成 — {summary_text}')
+                title_label.setStyleSheet('font-weight: bold; font-size: 13px; color: #e74c3c;')
+            else:
+                title_label.setText(f'删除完成 — 全部成功 ({deleted_count} 个)')
+                title_label.setStyleSheet('font-weight: bold; font-size: 13px; color: #27ae60;')
+
+            progress_label.setText('')
+            close_btn.setVisible(True)
+            QApplication.processEvents()
+
+            # 标记主 tab 删除结束
+            self._branch_mgmt_deleting = False
+            self._branch_mgmt_cancel_flag = False
+            self._set_branch_mgmt_deleting_ui(False)
+            self.run_branch_mgmt_refresh()
+
+        def on_cancel_confirm():
+            dialog.reject()
+
+        def on_cancel_delete():
+            cancel_delete_btn.setEnabled(False)
+            cancel_delete_btn.setText('正在取消...')
+            cancel_flag[0] = True
+
+        def on_close():
+            dialog.accept()
+
+        # 连接确认按钮
+        for action, btn in confirm_buttons:
+            btn.clicked.connect(lambda checked=False, a=action: start_delete(a))
+
+        cancel_confirm_btn.clicked.connect(on_cancel_confirm)
+        cancel_delete_btn.clicked.connect(on_cancel_delete)
+        close_btn.clicked.connect(on_close)
+
+        dialog.exec_()
+
+    # ─────────────────────── 分支管理：Tab 切换 ───────────────────────
+
+    def _set_branch_mgmt_buttons_enabled(self, enabled):
+        """统一启用/禁用分支管理的所有操作按钮和过滤器（不碰表格 checkbox）"""
+        self.branch_mgmt_select_all_btn.setEnabled(enabled)
+        self.branch_mgmt_invert_btn.setEnabled(enabled)
+        self.branch_mgmt_refresh_btn.setEnabled(enabled)
+        self.branch_mgmt_delete_btn.setEnabled(enabled)
+        self.branch_mgmt_text_filter.setEnabled(enabled)
+        self.branch_mgmt_prefix_combo.setEnabled(enabled)
+        self.branch_mgmt_time_combo.setEnabled(enabled)
+        self.branch_mgmt_local_btn.setEnabled(enabled)
+        self.branch_mgmt_remote_btn.setEnabled(enabled)
+
+    def _set_branch_mgmt_deleting_ui(self, deleting):
+        """删除进行中：隐藏常规按钮，显示取消按钮"""
+        self.branch_mgmt_select_all_btn.setVisible(not deleting)
+        self.branch_mgmt_invert_btn.setVisible(not deleting)
+        self.branch_mgmt_refresh_btn.setVisible(not deleting)
+        self.branch_mgmt_delete_btn.setVisible(not deleting)
+        self.branch_mgmt_cancel_btn.setVisible(deleting)
+        # 过滤器和切换也禁用
+        self.branch_mgmt_text_filter.setEnabled(not deleting)
+        self.branch_mgmt_prefix_combo.setEnabled(not deleting)
+        self.branch_mgmt_time_combo.setEnabled(not deleting)
+        self.branch_mgmt_local_btn.setEnabled(not deleting)
+        self.branch_mgmt_remote_btn.setEnabled(not deleting)
+
+    def _cancel_branch_mgmt_delete(self):
+        """用户点击取消删除按钮"""
+        self._branch_mgmt_cancel_flag = True
+        self.branch_mgmt_cancel_btn.setEnabled(False)
+        self.branch_mgmt_cancel_btn.setText('正在取消...')
+        self.branch_mgmt_status_label.setText('正在取消，等待当前分支操作完成...')
+        self.branch_mgmt_status_label.setStyleSheet('color: #f39c12; font-size: 12px;')
+
+    # ─────────────────────── 分支管理：Tab 切换 ───────────────────────
+
+    def _on_tools_tab_changed(self, index):
+        """切换到分支管理 tab 时自动刷新"""
+        if index == 3 and self.initialized and not self._branch_mgmt_deleting:
+            self.run_branch_mgmt_refresh()
 
     def _get_cached_branches(self, cache_key):
         """获取缓存的分支数据，如果过期则返回 None"""

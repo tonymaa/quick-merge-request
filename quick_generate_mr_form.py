@@ -186,3 +186,115 @@ def get_commits_between_branches(directory, source_branch, target_branch):
         return commits, None
     except Exception as e:
         return [], f'获取提交失败: {str(e)}'
+
+
+def get_branch_details(directory):
+    """一次性获取所有本地分支的详细信息（名称、提交时间、提交者、提交信息）。
+    使用 git for-each-ref 避免 N 次子进程调用。
+
+    Returns:
+        (branches_list, error_message): 成功时 error_message 为 None
+        每个 branch dict 包含: name, last_commit_date, author, subject, is_current
+    """
+    # 获取当前分支名
+    current_stdout, current_stderr = run_command(
+        ['git', 'branch', '--show-current'], directory
+    )
+    current_branch = current_stdout.strip() if current_stdout else ''
+
+    # 一次性获取所有本地分支详情，按提交时间倒序排列
+    fmt = '%(refname:short)|%(committerdate:iso8601)|%(authorname)|%(subject)'
+    stdout, stderr = run_command(
+        ['git', 'for-each-ref', f'--format={fmt}', '--sort=-committerdate', 'refs/heads/'],
+        directory
+    )
+    if stderr:
+        return [], f'获取分支详情失败: {stderr}'
+
+    branches = []
+    for line in stdout.strip().split('\n'):
+        if not line.strip():
+            continue
+        parts = line.split('|', 3)
+        if len(parts) < 4:
+            continue
+        name = parts[0]
+        branches.append({
+            'name': name,
+            'last_commit_date': parts[1],
+            'author': parts[2],
+            'subject': parts[3],
+            'is_current': name == current_branch,
+        })
+    return branches, None
+
+
+def get_branches_no_merged(directory, target_branch):
+    """获取相对于指定目标分支尚未合并的本地分支列表。
+
+    Returns:
+        (unmerged_set, error_message): 成功时 error_message 为 None
+    """
+    stdout, stderr = run_command(
+        ['git', 'branch', '--no-merged', target_branch], directory
+    )
+    if stderr:
+        return set(), stderr
+
+    unmerged = set()
+    for line in stdout.strip().split('\n'):
+        cleaned = _clean_branch_name(line)
+        if cleaned:
+            unmerged.add(cleaned)
+    return unmerged, None
+
+
+def get_remote_branch_details(directory):
+    """一次性获取所有远程分支的详细信息（名称、提交时间、提交者、提交信息）。
+    使用 git for-each-ref refs/remotes/origin/，排除 HEAD 引用。
+
+    Returns:
+        (branches_list, error_message): 成功时 error_message 为 None
+        每个 branch dict 包含: name, last_commit_date, author, subject
+    """
+    fmt = '%(refname:short)|%(committerdate:iso8601)|%(authorname)|%(subject)'
+    stdout, stderr = run_command(
+        ['git', 'for-each-ref', f'--format={fmt}', '--sort=-committerdate', 'refs/remotes/origin/'],
+        directory
+    )
+    if stderr:
+        return [], f'获取远程分支详情失败: {stderr}'
+
+    branches = []
+    for line in stdout.strip().split('\n'):
+        if not line.strip():
+            continue
+        parts = line.split('|', 3)
+        if len(parts) < 4:
+            continue
+        full_name = parts[0]  # e.g. "origin/SZ_dev"
+        if 'HEAD' in full_name:
+            continue
+        # 去掉 "origin/" 前缀，只保留分支名
+        name = full_name
+        if name.startswith('origin/'):
+            name = name[len('origin/'):]
+        branches.append({
+            'name': name,
+            'last_commit_date': parts[1],
+            'author': parts[2],
+            'subject': parts[3],
+        })
+    return branches, None
+
+
+def get_remote_url(directory):
+    """获取远程仓库 URL（用于远程删除时提取 GitLab 项目信息）。
+
+    Returns:
+        (url_string, error_message)
+    """
+    stdout, stderr = run_command(['git', 'remote', 'get-url', 'origin'], directory)
+    if stderr:
+        return None, f'获取远程 URL 失败: {stderr}'
+    return stdout.strip(), None
