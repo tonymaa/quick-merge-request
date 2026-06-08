@@ -1454,13 +1454,14 @@ class WorkspaceTab(QWidget):
             fetch_func = get_branch_details
 
         def _fetch_data():
-            # 先 fetch 更新远程引用，再获取分支数据
-            import subprocess
-            subprocess.run(
-                ['git', 'fetch', 'origin', '--quiet'],
-                cwd=self.path, capture_output=True, text=True,
-                encoding='utf-8', errors='replace'
-            )
+            # 远程模式先 fetch 更新远程引用，本地模式不需要
+            if is_remote:
+                import subprocess
+                subprocess.run(
+                    ['git', 'fetch', 'origin', '--quiet'],
+                    cwd=self.path, capture_output=True, text=True,
+                    encoding='utf-8', errors='replace'
+                )
             return fetch_func(self.path)
 
         def on_success(result):
