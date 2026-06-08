@@ -21,11 +21,12 @@ from app.async_utils import run_blocking
 class CreateMRDialog(QDialog):
     """创建 Merge Request 对话框"""
 
-    def __init__(self, repo_path: str, workspace_name: str, config, source_branch: str = None, parent=None):
+    def __init__(self, repo_path: str, workspace_name: str, config, source_branch: str = None, parent=None, config_file: str = 'config.xml'):
         super().__init__(parent)
         self.repo_path = repo_path
         self.workspace_name = workspace_name
         self.config = config
+        self.config_file = config_file
         self.source_branch = source_branch
         self.initUI()
 
@@ -277,7 +278,7 @@ class CreateMRDialog(QDialog):
         set_child_text(gitlab_config, 'gitlab_url', self.gitlab_url_input.text())
         set_child_text(gitlab_config, 'private_token', self.token_input.text())
         tree = ET.ElementTree(self.config)
-        tree.write('config.xml', encoding='UTF-8', xml_declaration=True)
+        tree.write(self.config_file, encoding='UTF-8', xml_declaration=True)
 
     def update_mr_fields(self):
         source_branch = self.source_branch_combo.currentText()

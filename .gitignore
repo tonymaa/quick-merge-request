@@ -25,7 +25,8 @@ cache.db.*
 *.sqlite3
 
 # local config (do not commit)
-config.xml
+config*.xml
+!config.example.xml
 
 # ===== Logs =====
 *.log

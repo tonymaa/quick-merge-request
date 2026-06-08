@@ -1,10 +1,12 @@
 import os
+import glob
+import copy
 import xml.etree.ElementTree as ET
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QPushButton, QFileDialog,
-    QLabel, QInputDialog, QMessageBox, QMenu
+    QLabel, QInputDialog, QMessageBox, QMenu, QComboBox
 )
 from PyQt5.QtGui import QIcon, QPainter, QColor
 from PyQt5.QtWidgets import QSystemTrayIcon
@@ -21,6 +23,7 @@ class App(QWidget):
         self.top = 100
         self.width = 800
         self.height = 700
+        self.config_file = 'config.xml'
         self.config = self.load_config()
         self.git_watcher = get_global_watcher()
         # 设置主窗口引用，用于通知按钮点击时打开对话框
@@ -33,7 +36,7 @@ class App(QWidget):
 
     def load_config(self):
         try:
-            tree = ET.parse('config.xml')
+            tree = ET.parse(self.config_file)
             root = tree.getroot()
             return root
         except (FileNotFoundError, ET.ParseError):
@@ -41,7 +44,7 @@ class App(QWidget):
             ET.SubElement(root, 'gitlab')
             ET.SubElement(root, 'workspaces')
             tree = ET.ElementTree(root)
-            tree.write('config.xml', encoding='UTF-8', xml_declaration=True)
+            tree.write(self.config_file, encoding='UTF-8', xml_declaration=True)
             return root
 
     def save_config(self):
@@ -62,7 +65,115 @@ class App(QWidget):
                         branch_name = tab_widget.target_branch_list.item(j).text()
                         ET.SubElement(ws_node, 'target_branch').text = branch_name
             tree = ET.ElementTree(self.config)
-            tree.write('config.xml', encoding='UTF-8', xml_declaration=True)
+            tree.write(self.config_file, encoding='UTF-8', xml_declaration=True)
+
+    def scan_config_files(self):
+        """扫描当前目录下的配置文件"""
+        files = glob.glob('config*.xml')
+        # config.xml 排第一，其余按名称排序
+        return sorted(files, key=lambda f: (f != 'config.xml', f))
+
+    def refresh_config_combo(self):
+        """刷新配置文件下拉列表"""
+        self.config_combo.blockSignals(True)
+        current = self.config_file
+        self.config_combo.clear()
+        for f in self.scan_config_files():
+            self.config_combo.addItem(f)
+        self.config_combo.setCurrentText(current)
+        self.config_combo.blockSignals(False)
+        # 禁止删除默认配置
+        self.delete_config_button.setEnabled(self.config_file != 'config.xml')
+
+    def on_config_changed(self, config_file: str):
+        """配置文件切换回调"""
+        if not config_file or config_file == self.config_file:
+            return
+        reply = QMessageBox.question(
+            self, '切换配置',
+            f'确定要切换到 "{config_file}" 吗？\n当前配置将自动保存。',
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            self.switch_config(config_file)
+        else:
+            self.refresh_config_combo()
+
+    def switch_config(self, config_file: str):
+        """切换到指定的配置文件"""
+        if config_file == self.config_file:
+            return
+        self.save_config()
+        self.clear_all_workspaces()
+        self.config_file = config_file
+        self.config = self.load_config()
+        self.load_workspaces()
+        self.refresh_config_combo()
+
+    def clear_all_workspaces(self):
+        """清除所有工作区标签页"""
+        for i in range(self.workspace_tabs.count() - 1, -1, -1):
+            tab_widget = self.workspace_tabs.widget(i)
+            if isinstance(tab_widget, WorkspaceTab):
+                self.git_watcher.remove_repository(tab_widget.path)
+                self.workspace_tabs.removeTab(i)
+        # 重新添加欢迎标签页（如果已被移除）
+        if self.workspace_tabs.indexOf(self.welcome_tab) == -1:
+            self.workspace_tabs.insertTab(0, self.welcome_tab, '')
+            idx = self.workspace_tabs.indexOf(self.welcome_tab)
+            if idx != -1:
+                self.workspace_tabs.tabBar().setTabVisible(idx, False)
+
+    def create_new_config(self):
+        """创建新的配置文件"""
+        name, ok = QInputDialog.getText(self, '新建配置文件', '输入配置名称:')
+        if not (ok and name.strip()):
+            return
+        name = name.strip()
+        if name.endswith('.xml'):
+            name = name[:-4]
+        filename = f'config-{name}.xml' if not name.startswith('config') else f'{name}.xml'
+        if os.path.exists(filename):
+            QMessageBox.warning(self, '错误', f'配置文件 "{filename}" 已存在')
+            return
+        # 从当前配置复制 gitlab 和前缀设置
+        root = ET.Element('config')
+        gitlab = self.config.find('gitlab')
+        if gitlab is not None:
+            root.append(copy.deepcopy(gitlab))
+        prefix = self.config.find('new_branch_prefix')
+        if prefix is not None:
+            root.append(copy.deepcopy(prefix))
+        ET.SubElement(root, 'workspaces')
+        tree = ET.ElementTree(root)
+        tree.write(filename, encoding='UTF-8', xml_declaration=True)
+        # 切换到新配置
+        self.switch_config(filename)
+
+    def delete_current_config(self):
+        """删除当前配置文件"""
+        if self.config_file == 'config.xml':
+            QMessageBox.warning(self, '错误', '不能删除默认配置文件')
+            return
+        config_to_delete = self.config_file
+        reply = QMessageBox.question(
+            self, '删除配置',
+            f'确定要删除 "{config_to_delete}" 吗？\n此操作不可撤销。',
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+        # 先清除工作区（不保存，避免重建被删文件）
+        self.clear_all_workspaces()
+        try:
+            os.remove(config_to_delete)
+        except OSError as e:
+            QMessageBox.warning(self, '错误', f'删除失败: {e}')
+        # 切回默认配置
+        self.config_file = 'config.xml'
+        self.config = self.load_config()
+        self.load_workspaces()
+        self.refresh_config_combo()
 
     def initUI(self):
         self.setWindowTitle(self.title)
@@ -75,6 +186,24 @@ class App(QWidget):
         self.notification_button = QPushButton('新提交通知')
         workspace_buttons_layout.addWidget(self.add_workspace_button)
         workspace_buttons_layout.addWidget(self.notification_button)
+        workspace_buttons_layout.addStretch()
+
+        config_label = QLabel('配置:')
+        self.config_combo = QComboBox()
+        self.config_combo.setMinimumWidth(150)
+        self.config_combo.setToolTip('切换配置文件')
+        self.new_config_button = QPushButton('新建')
+        self.new_config_button.setFixedWidth(50)
+        self.new_config_button.clicked.connect(self.create_new_config)
+        self.delete_config_button = QPushButton('删除')
+        self.delete_config_button.setFixedWidth(50)
+        self.delete_config_button.clicked.connect(self.delete_current_config)
+        self.refresh_config_combo()
+        self.config_combo.currentTextChanged.connect(self.on_config_changed)
+        workspace_buttons_layout.addWidget(config_label)
+        workspace_buttons_layout.addWidget(self.config_combo)
+        workspace_buttons_layout.addWidget(self.new_config_button)
+        workspace_buttons_layout.addWidget(self.delete_config_button)
         main_layout.addLayout(workspace_buttons_layout)
 
         self.workspace_tabs = QTabWidget()
@@ -133,7 +262,7 @@ class App(QWidget):
     def add_workspace_tab(self, name, path, workspace_config, make_current=True):
         # 标准化路径为绝对路径
         path = os.path.abspath(path)
-        tab = WorkspaceTab(path, self.config, workspace_config, name)
+        tab = WorkspaceTab(path, self.config, workspace_config, name, config_file=self.config_file)
         self.workspace_tabs.addTab(tab, name)
         if make_current:
             self.workspace_tabs.setCurrentWidget(tab)
@@ -330,7 +459,8 @@ class App(QWidget):
                     workspace_name=request.workspace_name,
                     config=self.config,
                     source_branch=request.branch,
-                    parent=self
+                    parent=self,
+                    config_file=self.config_file
                 )
                 # 设置为工具窗口，打开时置顶
                 dialog.setWindowFlags(dialog.windowFlags() | Qt.Tool)

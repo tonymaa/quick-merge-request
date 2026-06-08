@@ -475,10 +475,11 @@ class WorkspaceTab(QWidget):
     # 缓存 TTL：5分钟
     CACHE_TTL = 300
 
-    def __init__(self, path, config, workspace_config, workspace_name=None):
+    def __init__(self, path, config, workspace_config, workspace_name=None, config_file='config.xml'):
         super().__init__()
         self.path = path
         self.config = config
+        self.config_file = config_file
         self.workspace_config = workspace_config
         self.workspace_name = workspace_name or ''
         self.initialized = False
@@ -951,7 +952,7 @@ class WorkspaceTab(QWidget):
         set_child_text(gitlab_config, 'assignee', self.assignee_combo.currentText())
         set_child_text(gitlab_config, 'reviewer', self.reviewer_combo.currentText())
         tree = ET.ElementTree(self.config)
-        tree.write('config.xml', encoding='UTF-8', xml_declaration=True)
+        tree.write(self.config_file, encoding='UTF-8', xml_declaration=True)
 
     def save_gitlab_basic_config(self):
         gitlab_config = self.config.find('gitlab')
@@ -965,7 +966,7 @@ class WorkspaceTab(QWidget):
         set_child_text(gitlab_config, 'gitlab_url', self.gitlab_url_input.text())
         set_child_text(gitlab_config, 'private_token', self.token_input.text())
         tree = ET.ElementTree(self.config)
-        tree.write('config.xml', encoding='UTF-8', xml_declaration=True)
+        tree.write(self.config_file, encoding='UTF-8', xml_declaration=True)
 
     def update_mr_fields(self):
         source_branch = self.source_branch_combo.currentText()
