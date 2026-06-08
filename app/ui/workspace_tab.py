@@ -1764,8 +1764,6 @@ class WorkspaceTab(QWidget):
 
     def run_branch_mgmt_delete(self):
         """批量删除选中的分支，带实时进度的对话框"""
-        import subprocess
-
         # 收集选中分支
         selected_branches = []
         for checkbox, branch in self._branch_mgmt_checkboxes:
@@ -1948,90 +1946,119 @@ class WorkspaceTab(QWidget):
             progress_label.setVisible(True)
             dialog._deleting = True
 
-            # 在主线程逐个执行，每删一个刷新 UI
             flag = '-D' if action == 'force' else '-d'
             directory = self.path
+            total = len(row_widgets)
+            counters = {'deleted': 0, 'failed': 0, 'index': 0}
 
-            deleted_count = 0
-            failed_count = 0
+            def delete_next():
+                """异步删除下一个分支，完成后回调自身"""
+                i = counters['index']
 
-            for i, (status_lbl, name_lbl, branch) in enumerate(row_widgets):
-                # 检查取消
-                if cancel_flag[0]:
-                    # 剩余的标记为跳过
-                    for j in range(i, len(row_widgets)):
-                        s, n, _ = row_widgets[j]
-                        s.setText('–')
-                        s.setStyleSheet('color: #7f8c8d; font-size: 14px;')
-                    break
+                # 检查是否全部完成
+                if i >= total or cancel_flag[0]:
+                    finish_delete()
+                    return
 
+                status_lbl, name_lbl, branch = row_widgets[i]
                 name = branch['name']
-                progress_label.setText(f'正在处理 {i + 1}/{len(row_widgets)}: {name}')
+
+                # 更新当前行状态为"处理中"
+                progress_label.setText(f'正在处理 {i + 1}/{total}: {name}')
                 name_lbl.setStyleSheet('font-weight: bold; font-size: 12px; color: #f39c12;')
-                QApplication.processEvents()
 
-                # 执行删除
-                try:
-                    if is_remote:
-                        cmd = ['git', 'push', 'origin', '--delete', name]
-                    else:
-                        cmd = ['git', 'branch', flag, name]
+                # 构造删除命令
+                if is_remote:
+                    cmd = ['git', 'push', 'origin', '--delete', name]
+                else:
+                    cmd = ['git', 'branch', flag, name]
 
-                    result_del = subprocess.run(
-                        cmd, cwd=directory, capture_output=True, text=True,
-                        encoding='utf-8', errors='replace'
-                    )
-                    if result_del.returncode == 0:
+                def _run_delete():
+                    import subprocess
+                    try:
+                        result_del = subprocess.run(
+                            cmd, cwd=directory, capture_output=True, text=True,
+                            encoding='utf-8', errors='replace'
+                        )
+                        if result_del.returncode == 0:
+                            return True, None
+                        else:
+                            return False, result_del.stderr.strip()[:200]
+                    except Exception as e:
+                        return False, str(e)[:200]
+
+                def on_branch_done(result):
+                    success, error = result
+                    if success:
                         status_lbl.setText('✓')
                         status_lbl.setStyleSheet('color: #27ae60; font-size: 14px; font-weight: bold;')
                         name_lbl.setStyleSheet('font-weight: bold; font-size: 12px; color: #27ae60; text-decoration: line-through;')
-                        deleted_count += 1
+                        counters['deleted'] += 1
                     else:
                         status_lbl.setText('✗')
                         status_lbl.setStyleSheet('color: #e74c3c; font-size: 14px; font-weight: bold;')
                         name_lbl.setStyleSheet('font-weight: bold; font-size: 12px; color: #e74c3c;')
-                        name_lbl.setToolTip(result_del.stderr.strip()[:200])
-                        failed_count += 1
-                except Exception as e:
+                        if error:
+                            name_lbl.setToolTip(error)
+                        counters['failed'] += 1
+
+                    counters['index'] += 1
+                    # 继续删下一个
+                    delete_next()
+
+                def on_branch_error(err):
                     status_lbl.setText('✗')
                     status_lbl.setStyleSheet('color: #e74c3c; font-size: 14px; font-weight: bold;')
                     name_lbl.setStyleSheet('font-weight: bold; font-size: 12px; color: #e74c3c;')
-                    name_lbl.setToolTip(str(e)[:200])
-                    failed_count += 1
+                    name_lbl.setToolTip(str(err)[:200])
+                    counters['failed'] += 1
+                    counters['index'] += 1
+                    delete_next()
 
-                QApplication.processEvents()
+                run_blocking(_run_delete, on_success=on_branch_done, on_error=on_branch_error, parent=self)
 
-            # ── 删除完成 ──
-            dialog._deleting = False
-            cancel_delete_btn.setVisible(False)
+            def finish_delete():
+                """所有删除完成（或取消）后的收尾"""
+                # 取消的分支标记为跳过
+                for j in range(counters['index'], total):
+                    s, n, _ = row_widgets[j]
+                    s.setText('–')
+                    s.setStyleSheet('color: #7f8c8d; font-size: 14px;')
 
-            skipped = len(row_widgets) - deleted_count - failed_count
+                dialog._deleting = False
+                cancel_delete_btn.setVisible(False)
 
-            summary_parts = []
-            if deleted_count:
-                summary_parts.append(f'✓ 成功 {deleted_count}')
-            if failed_count:
-                summary_parts.append(f'✗ 失败 {failed_count}')
-            if skipped:
-                summary_parts.append(f'– 跳过 {skipped}')
-            summary_text = '  '.join(summary_parts)
+                deleted_count = counters['deleted']
+                failed_count = counters['failed']
+                skipped = total - deleted_count - failed_count
 
-            if failed_count or skipped:
-                title_label.setText(f'删除完成 — {summary_text}')
-                title_label.setStyleSheet('font-weight: bold; font-size: 13px; color: #e74c3c;')
-            else:
-                title_label.setText(f'删除完成 — 全部成功 ({deleted_count} 个)')
-                title_label.setStyleSheet('font-weight: bold; font-size: 13px; color: #27ae60;')
+                summary_parts = []
+                if deleted_count:
+                    summary_parts.append(f'✓ 成功 {deleted_count}')
+                if failed_count:
+                    summary_parts.append(f'✗ 失败 {failed_count}')
+                if skipped:
+                    summary_parts.append(f'– 跳过 {skipped}')
+                summary_text = '  '.join(summary_parts)
 
-            progress_label.setText('')
-            close_btn.setVisible(True)
-            QApplication.processEvents()
+                if failed_count or skipped:
+                    title_label.setText(f'删除完成 — {summary_text}')
+                    title_label.setStyleSheet('font-weight: bold; font-size: 13px; color: #e74c3c;')
+                else:
+                    title_label.setText(f'删除完成 — 全部成功 ({deleted_count} 个)')
+                    title_label.setStyleSheet('font-weight: bold; font-size: 13px; color: #27ae60;')
 
-            # 标记主 tab 删除结束
-            self._branch_mgmt_deleting = False
-            self._branch_mgmt_cancel_flag = False
-            self._set_branch_mgmt_deleting_ui(False)
-            self.run_branch_mgmt_refresh()
+                progress_label.setText('')
+                close_btn.setVisible(True)
+
+                # 标记主 tab 删除结束
+                self._branch_mgmt_deleting = False
+                self._branch_mgmt_cancel_flag = False
+                self._set_branch_mgmt_deleting_ui(False)
+                self.run_branch_mgmt_refresh()
+
+            # 启动链式删除
+            delete_next()
 
         def on_cancel_confirm():
             dialog.reject()
