@@ -35,3 +35,5 @@ config*.xml
 build/
 dist/
 *.egg-info/
+*.spec
+app.ico
