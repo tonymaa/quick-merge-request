@@ -3,9 +3,9 @@
     <new_branch_prefix>xxx/{tab_name}_</new_branch_prefix>
     <gitlab>
         <gitlab_url>http://pd-gitlab.toppanecquaria.com:10080</gitlab_url>
-        <private_token></private_token>
-        <assignee></assignee>
-        <reviewer></reviewer>
+        <private_token />
+        <assignee />
+        <reviewer />
         <title_template>{commit_message}</title_template>
         <description_template>## Description of Changes
 
@@ -27,4 +27,4 @@
 - [x] No conflict with target branch</description_template>
     </gitlab>
 
-</config>
+<workspaces /></config>

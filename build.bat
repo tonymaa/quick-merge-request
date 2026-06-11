@@ -8,14 +8,7 @@ echo.
 
 cd /d "%~dp0"
 
-:: Step 1: Generate icon
-echo [1/3] Generating icon...
-python generate_icon.py
-if errorlevel 1 (
-    echo [ERROR] Icon generation failed!
-    pause
-    exit /b 1
-)
+
 
 :: Step 2: Clean old build
 echo [2/3] Cleaning old build...
@@ -26,7 +19,7 @@ echo [3/3] Building exe (this may take a minute)...
 pyinstaller ^
     --onefile ^
     --windowed ^
-    --icon=app.ico ^
+    --icon=quick-mr.ico ^
     --name=GitLab-QuickMR ^
     --clean ^
     --noconfirm ^
