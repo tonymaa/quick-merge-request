@@ -60,6 +60,121 @@ def parse_target_branch_from_source(source_branch):
     except Exception:
         return None
 
+def _resolve_gitlab_project(directory, gitlab_url, token):
+    """根据本地仓库的 remote URL 解析出对应的 GitLab 项目。
+
+    Returns:
+        (project, error): 成功时 error 为 None；失败时 project 为 None。
+    """
+    try:
+        gl = gitlab.Gitlab(url=gitlab_url, private_token=token)
+        gl.auth()
+    except Exception as e:
+        return None, f'GitLab authentication failed: {e}'
+
+    stdout, stderr = run_command(['git', 'remote', '-v'], directory)
+    if stderr:
+        return None, f'Could not get remote URL: {stderr}'
+
+    match = re.search(r'https?://[^\s]+', stdout or '')
+    if not match:
+        return None, 'Could not find an HTTP(S) remote URL.'
+
+    remote_url = match.group(0)
+    project_path = urlparse(remote_url).path.strip('/').replace('.git', '')
+    try:
+        project = gl.projects.get(project_path)
+    except Exception as e:
+        return None, f'Could not find GitLab project "{project_path}": {e}'
+    return project, None
+
+
+def _extract_username(user_info):
+    """从 GitLab user 字段（dict）中提取展示名。"""
+    if isinstance(user_info, dict):
+        return user_info.get('name') or user_info.get('username') or ''
+    return ''
+
+
+def get_merge_requests(directory, gitlab_url, token, state='opened',
+                       author=None, assignee=None, reviewer=None):
+    """按筛选条件获取当前工作区对应 GitLab 项目的 MR 列表。
+
+    Args:
+        state: 'opened' / 'merged' / 'closed' / 'all'
+        author: 创建人 username，None 或空表示不筛选
+        assignee: 指派人 username，None 或空表示不筛选
+        reviewer: 审查者 username，None 或空表示不筛选
+
+    Returns:
+        (mr_list, error): 成功时 error 为 None；失败时 mr_list 为 []。
+        每个元素为 dict: {iid, title, source_branch, target_branch, author,
+                          assignees, reviewers, created_at, web_url,
+                          merge_status, state}
+    """
+    project, error = _resolve_gitlab_project(directory, gitlab_url, token)
+    if error:
+        return [], error
+
+    params = {'state': state, 'all': True}
+    if author:
+        params['author_username'] = author
+    if assignee:
+        params['assignee_username'] = assignee
+    if reviewer:
+        params['reviewer_username'] = reviewer
+
+    try:
+        mrs = project.mergerequests.list(**params)
+    except Exception as e:
+        return [], f'Failed to load merge requests: {e}'
+
+    result = []
+    for mr in mrs:
+        assignees = ', '.join(
+            filter(None, (_extract_username(u) for u in (getattr(mr, 'assignees', None) or [])))
+        )
+        reviewers = ', '.join(
+            filter(None, (_extract_username(u) for u in (getattr(mr, 'reviewers', None) or [])))
+        )
+        result.append({
+            'iid': mr.iid,
+            'title': getattr(mr, 'title', ''),
+            'source_branch': getattr(mr, 'source_branch', ''),
+            'target_branch': getattr(mr, 'target_branch', ''),
+            'author': _extract_username(getattr(mr, 'author', None)),
+            'assignees': assignees,
+            'reviewers': reviewers,
+            'created_at': getattr(mr, 'created_at', ''),
+            'web_url': getattr(mr, 'web_url', ''),
+            'merge_status': getattr(mr, 'merge_status', ''),
+            'state': getattr(mr, 'state', ''),
+        })
+    return result, None
+
+
+def merge_merge_request(directory, gitlab_url, token, mr_iid):
+    """合并指定 iid 的 Merge Request。
+
+    Returns:
+        结果字符串（成功或友好的错误信息）。
+    """
+    project, error = _resolve_gitlab_project(directory, gitlab_url, token)
+    if error:
+        return error
+
+    try:
+        mr = project.mergerequests.get(mr_iid)
+    except Exception as e:
+        return f'Could not find MR !{mr_iid}: {e}'
+
+    try:
+        mr.merge()
+        return f'MR !{mr_iid} 合并成功！'
+    except Exception as e:
+        return f'MR !{mr_iid} 合并失败: {e}'
+
+
 def generate_mr(directory, gitlab_url, token, assignee_user, reviewer_user, source_branch, title, description, target_branch):
     try:
         gl = gitlab.Gitlab(url=gitlab_url, private_token=token)
@@ -70,12 +185,12 @@ def generate_mr(directory, gitlab_url, token, assignee_user, reviewer_user, sour
     if not source_branch:
         return 'Please select a source branch.'
 
-    
+
     # Get project
     stdout, stderr = run_command(['git', 'remote', '-v'], directory)
     if stderr:
         return f'Could not get remote URL: {stderr}'
-    
+
     remote_url = re.search(r'https?://[^\s]+', stdout).group(0)
     project_path = urlparse(remote_url).path.strip('/').replace('.git', '')
     project = gl.projects.get(project_path)
