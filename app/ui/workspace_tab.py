@@ -18,7 +18,8 @@ from quick_generate_mr_form import (
     get_local_branches, get_all_local_branches, generate_mr, get_mr_defaults,
     parse_target_branch_from_source, get_gitlab_usernames, get_branch_diff,
     get_commits_between_branches, get_branch_details, get_branches_no_merged,
-    get_remote_branch_details, get_remote_url
+    get_remote_branch_details, get_remote_url,
+    get_merge_requests, merge_merge_request
 )
 from app.widgets import NoWheelComboBox, enable_combo_search as util_enable_combo_search
 from PyQt5.QtWidgets import QScrollArea, QLabel
@@ -498,16 +499,19 @@ class WorkspaceTab(QWidget):
         self.create_mr_tab = QWidget()
         self.cherry_pick_tab = QWidget()
         self.branch_mgmt_tab = QWidget()
+        self.mr_list_tab = QWidget()
 
         self.tools_tabs.addTab(self.create_branch_tab, '创建分支')
         self.tools_tabs.addTab(self.cherry_pick_tab, '快速Cherry-pick')
         self.tools_tabs.addTab(self.create_mr_tab, '创建合并请求')
         self.tools_tabs.addTab(self.branch_mgmt_tab, '分支管理')
+        self.tools_tabs.addTab(self.mr_list_tab, '合并请求列表')
 
         self.init_create_branch_tab()
         self.init_create_mr_tab()
         self.init_cherry_pick_tab()
         self.init_branch_mgmt_tab()
+        self.init_mr_list_tab()
 
         self.tools_tabs.currentChanged.connect(self._on_tools_tab_changed)
 
@@ -1073,6 +1077,319 @@ class WorkspaceTab(QWidget):
                 self.mr_output.setText('源分支与目标分支之间没有新的提交。')
 
         run_blocking(_fetch_commits, on_success=on_success, parent=self)
+
+    # ─────────────────────── 合并请求列表 Tab ───────────────────────
+
+    def _get_gitlab_config_value(self, tag, default=''):
+        """从 config 的 gitlab 节点读取配置值（与 init_create_mr_tab 一致）"""
+        gitlab_config = self.config.find('gitlab') if self.config is not None else None
+        if gitlab_config is not None:
+            found = gitlab_config.find(tag)
+            if found is not None and found.text:
+                return found.text.strip()
+        return default
+
+    # 状态下拉项 → GitLab API state 值
+    MR_STATE_OPTIONS = [
+        ('Open', 'opened'),
+        ('已合并', 'merged'),
+        ('已关闭', 'closed'),
+        ('全部', 'all'),
+    ]
+
+    def init_mr_list_tab(self):
+        """构建合并请求列表 tab：筛选器 + 刷新 + MR 表格"""
+        # 用户下拉是否已加载（懒加载标记）
+        self._mr_list_users_loaded = False
+        # 刷新请求序号：用于丢弃过期的并发响应，避免旧数据覆盖新筛选结果
+        self._mr_list_refresh_seq = 0
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        # ── 筛选器 + 操作栏 ──
+        top_layout = QHBoxLayout()
+        top_layout.setSpacing(8)
+
+        # 状态筛选
+        self.mr_list_state_combo = NoWheelComboBox()
+        for label, _value in self.MR_STATE_OPTIONS:
+            self.mr_list_state_combo.addItem(label)
+        self.mr_list_state_combo.setCurrentIndex(0)  # 默认 Open
+        self.mr_list_state_combo.setMinimumWidth(90)
+
+        # 创建人 / 指派 / 审查者 筛选（可搜索，首项为不筛选）
+        self.mr_list_author_combo = NoWheelComboBox()
+        self.mr_list_assignee_combo = NoWheelComboBox()
+        self.mr_list_reviewer_combo = NoWheelComboBox()
+        for combo in (self.mr_list_author_combo, self.mr_list_assignee_combo, self.mr_list_reviewer_combo):
+            combo.addItem('(全部)')
+            combo.setMinimumWidth(120)
+            self.enable_combo_search(combo)
+
+        top_layout.addWidget(QLabel('状态:'))
+        top_layout.addWidget(self.mr_list_state_combo)
+        top_layout.addWidget(QLabel('创建人:'))
+        top_layout.addWidget(self.mr_list_author_combo, stretch=1)
+        top_layout.addWidget(QLabel('指派:'))
+        top_layout.addWidget(self.mr_list_assignee_combo, stretch=1)
+        top_layout.addWidget(QLabel('审查者:'))
+        top_layout.addWidget(self.mr_list_reviewer_combo, stretch=1)
+
+        self.mr_list_refresh_btn = QPushButton('刷新')
+        self.mr_list_refresh_btn.setStyleSheet('''
+            QPushButton {
+                background: #f5f5f5; border: 1px solid #ddd; border-radius: 4px;
+                padding: 6px 14px; color: #555;
+            }
+            QPushButton:hover { background: #e8e8e8; }
+        ''')
+        self.mr_list_refresh_btn.clicked.connect(self.run_refresh_mr_list)
+        top_layout.addWidget(self.mr_list_refresh_btn)
+
+        layout.addLayout(top_layout)
+
+        # 筛选变化即刷新
+        self.mr_list_state_combo.currentIndexChanged.connect(self.run_refresh_mr_list)
+        self.mr_list_author_combo.currentIndexChanged.connect(self.run_refresh_mr_list)
+        self.mr_list_assignee_combo.currentIndexChanged.connect(self.run_refresh_mr_list)
+        self.mr_list_reviewer_combo.currentIndexChanged.connect(self.run_refresh_mr_list)
+
+        # 状态栏
+        self.mr_list_status_label = QLabel('')
+        self.mr_list_status_label.setStyleSheet('color: #888; font-size: 12px;')
+        layout.addWidget(self.mr_list_status_label)
+
+        # ── MR 表格 ──
+        self.mr_list_table = QTableWidget()
+        self.mr_list_table.setColumnCount(8)
+        self.mr_list_table.setHorizontalHeaderLabels(
+            ['标题', '源分支 → 目标分支', '作者', '指派', '审查者', '创建时间', '合并状态', '操作']
+        )
+        self.mr_list_table.setAlternatingRowColors(True)
+        self.mr_list_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.mr_list_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.mr_list_table.verticalHeader().setVisible(False)
+        self.mr_list_table.verticalHeader().setDefaultSectionSize(40)
+        self.mr_list_table.setShowGrid(False)
+
+        header = self.mr_list_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.Fixed)
+        header.setSectionResizeMode(3, QHeaderView.Fixed)
+        header.setSectionResizeMode(4, QHeaderView.Fixed)
+        header.setSectionResizeMode(5, QHeaderView.Fixed)
+        header.setSectionResizeMode(6, QHeaderView.Fixed)
+        header.setSectionResizeMode(7, QHeaderView.Fixed)
+        self.mr_list_table.setColumnWidth(2, 90)
+        self.mr_list_table.setColumnWidth(3, 90)
+        self.mr_list_table.setColumnWidth(4, 90)
+        self.mr_list_table.setColumnWidth(5, 150)
+        self.mr_list_table.setColumnWidth(6, 110)
+        self.mr_list_table.setColumnWidth(7, 80)
+
+        self.mr_list_table.setStyleSheet('''
+            QTableWidget {
+                border: 1px solid #ddd;
+                border-radius: 4px;
+            }
+            QTableWidget::item {
+                padding: 6px;
+            }
+            QTableWidget::item:selected {
+                background: #e8f4fc;
+                color: #333;
+            }
+            QHeaderView::section {
+                background: #f5f5f5;
+                padding: 8px;
+                border-bottom: 2px solid #3498db;
+                font-weight: bold;
+            }
+        ''')
+
+        layout.addWidget(self.mr_list_table)
+
+        self.mr_list_tab.setLayout(layout)
+
+    def _current_mr_state_filter(self):
+        """返回状态下拉当前选中项对应的 GitLab API state 值。"""
+        idx = self.mr_list_state_combo.currentIndex()
+        if 0 <= idx < len(self.MR_STATE_OPTIONS):
+            return self.MR_STATE_OPTIONS[idx][1]
+        return 'opened'
+
+    def _ensure_mr_list_users_loaded(self):
+        """懒加载创建人/指派/审查者下拉的用户列表（仅首次）。"""
+        if self._mr_list_users_loaded:
+            return
+        url = self._get_gitlab_config_value('gitlab_url')
+        token = self._get_gitlab_config_value('private_token')
+        if not url or not token:
+            return
+        self._mr_list_users_loaded = True  # 避免重复触发
+
+        def _fetch_users():
+            return get_gitlab_usernames(url, token)
+
+        def on_success(result):
+            users, error = result
+            if error:
+                self._mr_list_users_loaded = False  # 失败允许重试
+                return
+            for combo in (self.mr_list_author_combo, self.mr_list_assignee_combo, self.mr_list_reviewer_combo):
+                # 暂时断开信号，避免 addItems 触发刷新
+                combo.blockSignals(True)
+                current = combo.currentText()
+                for u in users:
+                    if combo.findText(u, Qt.MatchFixedString) < 0:
+                        combo.addItem(u)
+                combo.setCurrentText(current)
+                combo.blockSignals(False)
+
+        run_blocking(_fetch_users, on_success=on_success, parent=self)
+
+    def run_refresh_mr_list(self):
+        """异步拉取当前工作区的 MR 列表（按筛选条件）并填充表格"""
+        url = self._get_gitlab_config_value('gitlab_url')
+        token = self._get_gitlab_config_value('private_token')
+
+        if not url or not token:
+            self.mr_list_status_label.setText('请先在「创建合并请求」tab 配置 GitLab 地址和 Token。')
+            self.mr_list_table.setRowCount(0)
+            return
+
+        # 首次刷新时懒加载用户下拉
+        self._ensure_mr_list_users_loaded()
+
+        state = self._current_mr_state_filter()
+
+        def _filter_value(combo):
+            text = combo.currentText().strip()
+            return None if (not text or text == '(全部)') else text
+
+        author = _filter_value(self.mr_list_author_combo)
+        assignee = _filter_value(self.mr_list_assignee_combo)
+        reviewer = _filter_value(self.mr_list_reviewer_combo)
+
+        # 递增序号，标记本次为最新请求
+        self._mr_list_refresh_seq += 1
+        seq = self._mr_list_refresh_seq
+
+        self.mr_list_status_label.setText('正在加载合并请求...')
+        self.mr_list_refresh_btn.setEnabled(False)
+        QApplication.processEvents()
+
+        def _fetch():
+            return get_merge_requests(
+                self.path, url, token,
+                state=state, author=author, assignee=assignee, reviewer=reviewer
+            )
+
+        def on_success(result):
+            # 已有更新的请求发出，丢弃这次过期响应，避免旧数据覆盖
+            if seq != self._mr_list_refresh_seq:
+                return
+            self.mr_list_refresh_btn.setEnabled(True)
+            mr_list, error = result
+            if error:
+                self.mr_list_status_label.setText(error)
+                self.mr_list_table.setRowCount(0)
+                return
+            self._populate_mr_list_table(mr_list)
+            if mr_list:
+                self.mr_list_status_label.setText(f'共 {len(mr_list)} 个 MR。')
+            else:
+                self.mr_list_status_label.setText('没有符合条件的 MR。')
+
+        run_blocking(_fetch, on_success=on_success, parent=self)
+
+    @staticmethod
+    def _format_mr_datetime(iso_str):
+        """将 GitLab 的 ISO8601 时间（UTC）格式化为与分支管理一致的
+        本地时间字符串 'YYYY-MM-DD HH:MM:SS'。"""
+        if not iso_str:
+            return ''
+        try:
+            dt = datetime.fromisoformat(iso_str.replace('Z', '+00:00'))
+            # tz-aware 则转本地时区
+            if dt.tzinfo is not None:
+                dt = dt.astimezone()
+            return dt.strftime('%Y-%m-%d %H:%M:%S')
+        except Exception:
+            # 兜底：直接替换 T 并截取前 19 字符
+            return iso_str.replace('T', ' ')[:19]
+
+    def _populate_mr_list_table(self, mr_list):
+        """用 MR 数据填充表格，并为每行添加「合并」按钮"""
+        self.mr_list_table.setRowCount(len(mr_list))
+        for row, mr in enumerate(mr_list):
+            self.mr_list_table.setItem(row, 0, QTableWidgetItem(mr['title']))
+            branch_item = QTableWidgetItem(f"{mr['source_branch']} → {mr['target_branch']}")
+            self.mr_list_table.setItem(row, 1, branch_item)
+            self.mr_list_table.setItem(row, 2, QTableWidgetItem(mr['author']))
+            self.mr_list_table.setItem(row, 3, QTableWidgetItem(mr.get('assignees', '')))
+            self.mr_list_table.setItem(row, 4, QTableWidgetItem(mr.get('reviewers', '')))
+            self.mr_list_table.setItem(row, 5, QTableWidgetItem(self._format_mr_datetime(mr['created_at'])))
+
+            status_item = QTableWidgetItem(mr['merge_status'])
+            if mr['merge_status'] == 'can_be_merged':
+                status_item.setForeground(QColor('#27ae60'))
+            elif mr['merge_status'] == 'cannot_be_merged':
+                status_item.setForeground(QColor('#e74c3c'))
+            self.mr_list_table.setItem(row, 6, status_item)
+
+            merge_btn = QPushButton('合并')
+            merge_btn.setMinimumHeight(30)
+            merge_btn.setStyleSheet('''
+                QPushButton {
+                    background: #27ae60; color: white; border: none;
+                    border-radius: 4px; padding: 6px 12px; font-weight: bold;
+                }
+                QPushButton:hover { background: #2ecc71; }
+                QPushButton:disabled { background: #bdc3c7; color: #ecf0f1; }
+            ''')
+            # 仅 opened 状态可合并；已合并/已关闭的 MR 禁用按钮
+            if mr.get('state', 'opened') != 'opened':
+                merge_btn.setEnabled(False)
+                merge_btn.setToolTip('仅 Open 状态的 MR 可合并')
+            merge_btn.clicked.connect(
+                lambda _checked, m=mr: self.run_merge_mr(
+                    m['iid'], m['title'], m['source_branch'], m['target_branch']
+                )
+            )
+            self.mr_list_table.setCellWidget(row, 7, merge_btn)
+
+    def run_merge_mr(self, mr_iid, title, source_branch, target_branch):
+        """合并前弹确认框，确认后异步调用 GitLab API 合并"""
+        reply = QMessageBox.question(
+            self, '确认合并 Merge Request 吗？',
+            f"MR: !{mr_iid}\n"
+            f"标题: {title}\n"
+            f"源分支: {source_branch}\n"
+            f"目标分支: {target_branch}",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if reply == QMessageBox.No:
+            return
+
+        url = self._get_gitlab_config_value('gitlab_url')
+        token = self._get_gitlab_config_value('private_token')
+
+        self.mr_list_status_label.setText(f'正在合并 MR !{mr_iid}...')
+        QApplication.processEvents()
+
+        def _merge():
+            return merge_merge_request(self.path, url, token, mr_iid)
+
+        def on_success(output):
+            self.mr_list_status_label.setText(output)
+            # 合并完成后刷新列表（成功的 MR 会从列表消失）
+            self.run_refresh_mr_list()
+
+        run_blocking(_merge, on_success=on_success, parent=self)
 
     def init_cherry_pick_tab(self):
         layout = QVBoxLayout()
@@ -2129,9 +2446,11 @@ class WorkspaceTab(QWidget):
     # ─────────────────────── 分支管理：Tab 切换 ───────────────────────
 
     def _on_tools_tab_changed(self, index):
-        """切换到分支管理 tab 时自动刷新"""
+        """切换到分支管理 / 合并请求列表 tab 时自动刷新"""
         if index == 3 and self.initialized and not self._branch_mgmt_deleting:
             self.run_branch_mgmt_refresh()
+        elif index == 4 and self.initialized:
+            self.run_refresh_mr_list()
 
     def _get_cached_branches(self, cache_key):
         """获取缓存的分支数据，如果过期则返回 None"""
