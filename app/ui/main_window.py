@@ -6,12 +6,13 @@ from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QPushButton, QFileDialog,
-    QLabel, QInputDialog, QMessageBox, QMenu, QComboBox
+    QLabel, QInputDialog, QMessageBox, QMenu, QComboBox, QFrame
 )
 from PyQt5.QtGui import QIcon, QPainter, QColor
 from PyQt5.QtWidgets import QSystemTrayIcon
 from app.styles import apply_global_styles
 from app.ui.workspace_tab import WorkspaceTab
+from app.ui.all_projects_tab import AllProjectsTab
 from app.ui.commit_notification_dialog import CommitNotificationDialog
 from app.git_watcher import get_global_watcher
 
@@ -109,6 +110,10 @@ class App(QWidget):
         self.config = self.load_config()
         self.load_workspaces()
         self.refresh_config_combo()
+        # 切换配置后，同步「所有项目」tab 的 config 引用与共享字段
+        if hasattr(self, 'all_projects_tab'):
+            self.all_projects_tab.reload_config(self.config)
+            self.all_projects_tab.refresh_projects()
 
     def clear_all_workspaces(self):
         """清除所有工作区标签页"""
@@ -117,12 +122,15 @@ class App(QWidget):
             if isinstance(tab_widget, WorkspaceTab):
                 self.git_watcher.remove_repository(tab_widget.path)
                 self.workspace_tabs.removeTab(i)
-        # 重新添加欢迎标签页（如果已被移除）
+        # 重新添加欢迎标签页（如果已被移除）。all_projects_tab 始终在 index 0，
+        # 欢迎页不可见，追加到末尾即可，避免挪动「所有项目」的位置。
         if self.workspace_tabs.indexOf(self.welcome_tab) == -1:
-            self.workspace_tabs.insertTab(0, self.welcome_tab, '')
+            self.workspace_tabs.addTab(self.welcome_tab, '')
             idx = self.workspace_tabs.indexOf(self.welcome_tab)
             if idx != -1:
                 self.workspace_tabs.tabBar().setTabVisible(idx, False)
+        if hasattr(self, 'all_projects_tab'):
+            self.all_projects_tab.refresh_projects()
 
     def create_new_config(self):
         """创建新的配置文件"""
@@ -177,7 +185,17 @@ class App(QWidget):
 
     def initUI(self):
         self.setWindowTitle(self.title)
+        # 自适应可用屏幕：默认尺寸 800x700，若超出可用区域则收缩；同时确保左上角可见
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            avail = screen.availableGeometry()
+            self.width = min(self.width, avail.width() - 40)
+            self.height = min(self.height, avail.height() - 40)
+            self.left = max(20, min(self.left, avail.width() - self.width - 20))
+            self.top = max(20, min(self.top, avail.height() - self.height - 20))
         self.setGeometry(self.left, self.top, self.width, self.height)
+        # 给内部紧凑布局留个底线，避免被压扁
+        self.setMinimumSize(680, 480)
 
         main_layout = QVBoxLayout()
 
@@ -187,6 +205,14 @@ class App(QWidget):
         workspace_buttons_layout.addWidget(self.add_workspace_button)
         workspace_buttons_layout.addWidget(self.notification_button)
         workspace_buttons_layout.addStretch()
+
+        # 竖直分隔线：把工作区/通知 与 配置管理 视觉分组
+        toolbar_sep = QFrame()
+        toolbar_sep.setFrameShape(QFrame.VLine)
+        toolbar_sep.setFrameShadow(QFrame.Sunken)
+        toolbar_sep.setFixedWidth(2)
+        toolbar_sep.setStyleSheet('QFrame { color: #d0d0d0; }')
+        workspace_buttons_layout.addWidget(toolbar_sep)
 
         config_label = QLabel('配置:')
         self.config_combo = QComboBox()
@@ -210,6 +236,13 @@ class App(QWidget):
         self.workspace_tabs.setTabsClosable(True)
         self.workspace_tabs.tabCloseRequested.connect(self.remove_workspace_tab)
         self.workspace_tabs.currentChanged.connect(self.on_workspace_tab_changed)
+
+        # 固定的「批量操作」tab，插入到最左侧（index 0）
+        self.all_projects_tab = AllProjectsTab(self, self.config, self.config_file)
+        self.workspace_tabs.addTab(self.all_projects_tab, '批量操作')
+        # 隐藏该固定 tab 的关闭按钮，防止误删（延后到窗口显示后执行，避免在构造期触发底层绘制问题）
+        QTimer.singleShot(0, lambda: self._hide_close_button_for_tab(self.all_projects_tab))
+
         self.welcome_tab = QWidget()
         welcome_layout = QVBoxLayout()
         welcome_label = QLabel('请选择一个工作区标签页以开始')
@@ -250,6 +283,9 @@ class App(QWidget):
                     self.save_config()
                     QMessageBox.warning(self, '移除无效的工作区',
                                         '以下工作区的路径无效，已被自动移除：\n\n' + '\n'.join(removed_workspaces))
+        # 加载完成后同步「所有项目」列表
+        if hasattr(self, 'all_projects_tab'):
+            self.all_projects_tab.refresh_projects()
 
     def add_workspace(self):
         path = QFileDialog.getExistingDirectory(self, "选择工作区目录")
@@ -270,21 +306,30 @@ class App(QWidget):
         # 启动 Git 监听，传递 workspace name
         self.git_watcher.add_repository(path, name)
 
+        # 同步刷新「所有项目」里的项目勾选列表
+        if hasattr(self, 'all_projects_tab'):
+            self.all_projects_tab.refresh_projects()
+
     def remove_workspace_tab(self, index):
         if index < 0:
+            return
+        tab_widget = self.workspace_tabs.widget(index)
+        # 固定的「所有项目」tab 不可关闭
+        if isinstance(tab_widget, AllProjectsTab):
             return
         tab_name = self.workspace_tabs.tabText(index)
         reply = QMessageBox.question(self, '确认移除',
                                      f"您确定要移除工作区 '{tab_name}'吗？",
                                      QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply == QMessageBox.Yes:
-            tab_widget = self.workspace_tabs.widget(index)
             if isinstance(tab_widget, WorkspaceTab):
                 # 停止 Git 监听
                 self.git_watcher.remove_repository(tab_widget.path)
 
             self.workspace_tabs.removeTab(index)
             self.save_config()
+            if hasattr(self, 'all_projects_tab'):
+                self.all_projects_tab.refresh_projects()
 
     def closeEvent(self, event):
         """关闭窗口事件 - 显示选择对话框"""
@@ -327,6 +372,10 @@ class App(QWidget):
         if isinstance(w, WorkspaceTab):
             w.reload_new_branch_history()
             w.ensure_initialized()
+        # 只要切到任何可见 tab（WorkspaceTab 或 AllProjectsTab）就移除隐藏的欢迎页。
+        # 注意：initUI 中 addTab(AllProjectsTab) 会同步触发本回调，此时 welcome_tab
+        # 可能尚未创建，需要 hasattr 兜底。
+        if isinstance(w, (WorkspaceTab, AllProjectsTab)) and hasattr(self, 'welcome_tab'):
             for i in range(self.workspace_tabs.count()):
                 if self.workspace_tabs.widget(i) is self.welcome_tab:
                     self.workspace_tabs.removeTab(i)
@@ -335,6 +384,10 @@ class App(QWidget):
     def show_workspace_context_menu(self, position):
         tab_index = self.workspace_tabs.tabBar().tabAt(position)
         if tab_index != -1:
+            tab_widget = self.workspace_tabs.widget(tab_index)
+            # 固定的「所有项目」tab 不显示右键菜单
+            if isinstance(tab_widget, AllProjectsTab):
+                return
             context_menu = QMenu(self)
             rename_action = context_menu.addAction('重命名')
             rename_action.triggered.connect(lambda: self.rename_workspace_tab(tab_index))
@@ -352,6 +405,8 @@ class App(QWidget):
                                             text=current_name)
         if ok and new_name:
             self.workspace_tabs.setTabText(index, new_name)
+            if isinstance(tab_widget, WorkspaceTab):
+                tab_widget.workspace_name = new_name
             if self.config is not None:
                 workspaces_node = self.config.find('workspaces')
                 if workspaces_node is not None:
@@ -360,9 +415,24 @@ class App(QWidget):
                             ws.set('name', new_name)
                             break
             self.save_config()
+            if hasattr(self, 'all_projects_tab'):
+                self.all_projects_tab.refresh_projects()
 
     def apply_styles(self):
         apply_global_styles()
+
+    def _hide_close_button_for_tab(self, tab_widget):
+        """隐藏指定 tab 的关闭按钮（用于固定的「所有项目」tab）。"""
+        from PyQt5.QtWidgets import QTabBar
+        idx = self.workspace_tabs.indexOf(tab_widget)
+        if idx < 0:
+            return
+        bar = self.workspace_tabs.tabBar()
+        try:
+            bar.setTabButton(idx, QTabBar.LeftSide, None)
+            bar.setTabButton(idx, QTabBar.RightSide, None)
+        except Exception:
+            pass
 
     def create_tray_icon(self):
         """创建托盘图标"""
