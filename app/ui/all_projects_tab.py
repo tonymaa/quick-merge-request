@@ -132,8 +132,12 @@ class AllProjectsTab(QWidget):
         self.setLayout(layout)
 
     def _on_nav_changed(self, row):
-        if 0 <= row < self.content_stack.count():
-            self.content_stack.setCurrentIndex(row)
+        if not (0 <= row < self.content_stack.count()):
+            return
+        self.content_stack.setCurrentIndex(row)
+        # 进入「创建 MR」面板时，确保用户列表已加载
+        if self.content_stack.widget(row) is self.create_mr_tab:
+            self._ensure_mr_users_loaded()
 
     def _build_project_selector(self):
         group = QFrame()
@@ -744,25 +748,37 @@ class AllProjectsTab(QWidget):
         # 共享字段
         shared_form = QFormLayout()
         self.gitlab_url_input = QLineEdit(self._get_gitlab_value('gitlab_url'))
-        self.gitlab_url_input.textChanged.connect(lambda v: self._set_gitlab_value('gitlab_url', v))
+        self.gitlab_url_input.textChanged.connect(self._on_url_or_token_changed)
         self.token_input = QLineEdit(self._get_gitlab_value('private_token'))
         self.token_input.setEchoMode(QLineEdit.Password)
-        self.token_input.textChanged.connect(lambda v: self._set_gitlab_value('private_token', v))
+        self.token_input.textChanged.connect(self._on_url_or_token_changed)
 
         self.mr_assignee_combo = NoWheelComboBox()
         self.mr_reviewer_combo = NoWheelComboBox()
         _enable_combo_search(self.mr_assignee_combo)
         _enable_combo_search(self.mr_reviewer_combo)
+        # 用户手动切换选择 → 立即保存为默认
+        self.mr_assignee_combo.currentTextChanged.connect(self._save_user_selection)
+        self.mr_reviewer_combo.currentTextChanged.connect(self._save_user_selection)
         self.mr_refresh_users_button = QPushButton('刷新用户')
 
         assignee_row = QHBoxLayout()
         assignee_row.addWidget(self.mr_assignee_combo)
         assignee_row.addWidget(self.mr_refresh_users_button)
 
+        # 模板：保存原始模板（含变量），与展示文本分离
+        self._title_template = self._get_gitlab_value('title_template', 'Draft: {commit_message}')
+        self._desc_template = self._get_gitlab_value('description_template', '{commit_message}')
+        self._template_substituting = False  # 防止程序化赋值被误认为是用户编辑
+
         self.mr_title_input = QLineEdit()
-        self.mr_title_input.setPlaceholderText('支持 {source} / {target} 模板')
+        self.mr_title_input.setText(self._title_template)
+        self.mr_title_input.setPlaceholderText('支持 {source} / {target} / {commit_message} 模板')
+        self.mr_title_input.textChanged.connect(self._on_title_edited)
         self.mr_desc_input = QTextEdit()
-        self.mr_desc_input.setPlaceholderText('支持 {source} / {target} / {commits} 模板')
+        self.mr_desc_input.setText(self._desc_template)
+        self.mr_desc_input.setPlaceholderText('支持 {source} / {target} / {commit_message} 模板')
+        self.mr_desc_input.textChanged.connect(self._on_desc_edited)
         self.mr_desc_input.setMaximumHeight(80)
 
         shared_form.addRow('GitLab 地址:', self.gitlab_url_input)
@@ -772,6 +788,36 @@ class AllProjectsTab(QWidget):
         shared_form.addRow('标题模板:', self.mr_title_input)
         shared_form.addRow('描述模板:', self.mr_desc_input)
         layout.addLayout(shared_form)
+
+        # 共有分支选择器
+        common_branches_layout = QHBoxLayout()
+        common_branches_layout.setSpacing(12)
+        self.mr_common_source_combo = NoWheelComboBox()
+        self.mr_common_source_combo.setEditable(True)
+        self.mr_common_source_combo.setMinimumWidth(160)
+        self.mr_common_source_combo.setPlaceholderText('默认源分支')
+        _enable_combo_search(self.mr_common_source_combo)
+        self.mr_common_target_combo = NoWheelComboBox()
+        self.mr_common_target_combo.setEditable(True)
+        self.mr_common_target_combo.setMinimumWidth(160)
+        self.mr_common_target_combo.setPlaceholderText('默认目标分支')
+        _enable_combo_search(self.mr_common_target_combo)
+        self.mr_apply_common_btn = QPushButton('应用到所有项目')
+        self.mr_apply_common_btn.setStyleSheet(
+            'QPushButton { background: #1677ff; color: white; border: none; border-radius: 4px; padding: 6px 14px; }'
+            'QPushButton:hover { background: #4096ff; }'
+            'QPushButton:disabled { background: #bdc3c7; }'
+        )
+        self.mr_apply_common_btn.clicked.connect(self._apply_common_branches)
+        self.mr_apply_common_btn.setEnabled(False)
+        common_branches_layout.addWidget(QLabel('共有分支:'))
+        common_branches_layout.addWidget(QLabel('源:'))
+        common_branches_layout.addWidget(self.mr_common_source_combo)
+        common_branches_layout.addWidget(QLabel('目标:'))
+        common_branches_layout.addWidget(self.mr_common_target_combo)
+        common_branches_layout.addWidget(self.mr_apply_common_btn)
+        common_branches_layout.addStretch()
+        layout.addLayout(common_branches_layout)
 
         # 操作按钮
         ops = QHBoxLayout()
@@ -812,9 +858,8 @@ class AllProjectsTab(QWidget):
         self.mr_create_btn.clicked.connect(self.run_batch_create_mr)
         self.mr_refresh_users_button.clicked.connect(self.run_refresh_users)
 
-        # 首次填充用户
-        # 暂时注释：批量 MR tab 在主窗口初始化时调度异步请求可能引发底层崩溃；改为按需加载。
-        # self._load_users_into_combos_async()
+        # 自动加载用户列表，并在加载完成后应用 config 中保存的默认值
+        self._load_users_into_combos_async()
 
         self.create_mr_tab.setLayout(layout)
 
@@ -841,6 +886,9 @@ class AllProjectsTab(QWidget):
             _enable_combo_search(tgt_combo)
             src_combo.addItems(['(待刷新)'])
             tgt_combo.addItems(['(待刷新)'])
+            # 分支切换时实时更新标题/描述模板的变量替换
+            src_combo.currentIndexChanged.connect(self._update_template_preview)
+            tgt_combo.currentIndexChanged.connect(self._update_template_preview)
 
             status_label = QLabel('—')
             status_label.setAlignment(Qt.AlignCenter)
@@ -850,11 +898,12 @@ class AllProjectsTab(QWidget):
             self.mr_form_table.setCellWidget(row, 3, status_label)
             self._mr_form_rows.append((ws, src_combo, tgt_combo, status_label))
 
-    def run_refresh_users(self):
+    def run_refresh_users(self, save_default=False, silent=False):
         url = self.gitlab_url_input.text().strip()
         token = self.token_input.text().strip()
         if not url or not token:
-            QMessageBox.information(self, '提示', '请先填写 GitLab 地址和 Token。')
+            if not silent:
+                QMessageBox.information(self, '提示', '请先填写 GitLab 地址和 Token。')
             return
         self.mr_refresh_users_button.setEnabled(False)
 
@@ -865,9 +914,18 @@ class AllProjectsTab(QWidget):
             users, error = result
             self.mr_refresh_users_button.setEnabled(True)
             if error:
-                QMessageBox.warning(self, '加载用户失败', error)
+                if not silent:
+                    QMessageBox.warning(self, '加载用户失败', error)
                 return
             self._populate_user_combos(users)
+            # 保存默认值
+            if save_default:
+                assignee = self.mr_assignee_combo.currentText().strip()
+                reviewer = self.mr_reviewer_combo.currentText().strip()
+                if assignee:
+                    self._set_gitlab_value('mr_assignee', assignee)
+                if reviewer:
+                    self._set_gitlab_value('mr_reviewer', reviewer)
 
         run_blocking(_run, on_success=on_success, parent=self)
 
@@ -888,14 +946,116 @@ class AllProjectsTab(QWidget):
 
         run_blocking(_run, on_success=on_success, parent=self)
 
+    def _ensure_mr_users_loaded(self):
+        """切换到「创建 MR」面板时调用：若用户列表为空，尝试自动拉取一次。"""
+        if self.mr_assignee_combo.count() > 0 or self.mr_reviewer_combo.count() > 0:
+            return
+        # 优先用输入框当前值（用户可能刚填完），其次用 config
+        url = self.gitlab_url_input.text().strip() or self._get_gitlab_value('gitlab_url')
+        token = self.token_input.text().strip() or self._get_gitlab_value('private_token')
+        if not url or not token:
+            return
+
+        def _run():
+            return get_gitlab_usernames(url, token)
+
+        def on_success(result):
+            users, error = result
+            if error:
+                return
+            self._populate_user_combos(users)
+
+        run_blocking(_run, on_success=on_success, parent=self)
+
+    def _on_url_or_token_changed(self):
+        """GitLab 地址 / Token 变化时：保存到 config，并自动重新拉取用户列表。"""
+        url = self.gitlab_url_input.text().strip()
+        token = self.token_input.text().strip()
+        self._set_gitlab_value('gitlab_url', url)
+        self._set_gitlab_value('private_token', token)
+        if not url or not token:
+            return
+        # 防抖：用 _mr_list_users_loaded 之类的标记可不行，直接 silent 拉取
+        self.run_refresh_users(save_default=False, silent=True)
+
+    def _save_user_selection(self, _value=None):
+        """用户切换 assignee / reviewer 时立即保存为默认，下次自动选中。"""
+        assignee = self.mr_assignee_combo.currentText().strip()
+        reviewer = self.mr_reviewer_combo.currentText().strip()
+        if assignee:
+            self._set_gitlab_value('mr_assignee', assignee)
+        if reviewer:
+            self._set_gitlab_value('mr_reviewer', reviewer)
+
+    def _on_title_edited(self, text):
+        if self._template_substituting:
+            return
+        self._title_template = text
+        self._set_gitlab_value('title_template', text)
+
+    def _on_desc_edited(self):
+        if self._template_substituting:
+            return
+        text = self.mr_desc_input.toPlainText()
+        self._desc_template = text
+        self._set_gitlab_value('description_template', text)
+
+    def _update_template_preview(self):
+        """根据当前第一行已选分支，实时把模板中的变量替换并写回输入框。"""
+        source = ''
+        target = ''
+        for ws, src_combo, tgt_combo, _status in self._mr_form_rows:
+            s = src_combo.currentText().strip()
+            t = tgt_combo.currentText().strip()
+            if s and s != '(待刷新)':
+                source = s
+            if t and t != '(待刷新)':
+                target = t
+            if source and target:
+                break
+
+        try:
+            title = self._title_template.format(
+                source=source, target=target,
+                commit_message=source or '<commit>', tab_name='<workspace>'
+            )
+        except Exception:
+            title = self._title_template
+        try:
+            desc = self._desc_template.format(
+                source=source, target=target,
+                commit_message=source or '<commit>', tab_name='<workspace>'
+            )
+        except Exception:
+            desc = self._desc_template
+
+        self._template_substituting = True
+        self.mr_title_input.setText(title)
+        self.mr_desc_input.setText(desc)
+        self._template_substituting = False
+
     def _populate_user_combos(self, users):
-        for combo in (self.mr_assignee_combo, self.mr_reviewer_combo):
-            current = combo.currentText()
+        # 批量创建 MR 的指派给/审查者：优先保留当前选择；
+        # 为空则回退到 mr_assignee/mr_reviewer，再回退到单 workspace 的 assignee/reviewer。
+        for combo, primary_key, fallback_key in (
+            (self.mr_assignee_combo, 'mr_assignee', 'assignee'),
+            (self.mr_reviewer_combo, 'mr_reviewer', 'reviewer'),
+        ):
+            current = combo.currentText().strip()
             combo.blockSignals(True)
             combo.clear()
             for u in users:
                 combo.addItem(u)
-            combo.setCurrentText(current)
+            if not current:
+                current = (
+                    self._get_gitlab_value(primary_key, '').strip()
+                    or self._get_gitlab_value(fallback_key, '').strip()
+                )
+            if current:
+                # 默认值可能已不在用户列表里（例如离职），仍加入候选以保证可被选中
+                if combo.findText(current, Qt.MatchFixedString) < 0:
+                    combo.addItem(current)
+                combo.setCurrentText(current)
             combo.blockSignals(False)
 
         # 顺带把 MR 列表 tab 的用户下拉也填充
@@ -918,23 +1078,51 @@ class AllProjectsTab(QWidget):
             QMessageBox.information(self, '提示', '请先勾选至少一个项目。')
             return
 
+        # 先刷新用户数据
+        url = self.gitlab_url_input.text().strip()
+        token = self.token_input.text().strip()
+        if url and token:
+            # 尝试加载用户（silent模式，不弹出提示）
+            self.run_refresh_users(save_default=True, silent=True)
+
         self.mr_refresh_branches_btn.setEnabled(False)
         for _ws, _s, _t, status in rows:
             status.setText('加载中...')
 
         def _run():
             results = []
+            all_branch_sets = []
             for ws, _s, _t, _status in rows:
                 try:
                     # 远程分支作为源和目标候选
                     branches, msg = _safe_get_remote_branches(ws.path)
                     results.append((ws, branches, None))
+                    all_branch_sets.append(set(branches))
                 except Exception as e:
                     results.append((ws, [], str(e)))
-            return results
+                    all_branch_sets.append(set())
+            # 计算共有分支
+            common_branches = set()
+            if all_branch_sets:
+                common_branches = all_branch_sets[0]
+                for branch_set in all_branch_sets[1:]:
+                    common_branches &= branch_set
+            return results, sorted(common_branches)
 
-        def on_success(results):
+        def on_success(results_and_common):
+            results, common_branches = results_and_common
             self.mr_refresh_branches_btn.setEnabled(True)
+            # 填充共有分支选择器
+            self.mr_common_source_combo.blockSignals(True)
+            self.mr_common_target_combo.blockSignals(True)
+            self.mr_common_source_combo.clear()
+            self.mr_common_target_combo.clear()
+            self.mr_common_source_combo.addItems(common_branches)
+            self.mr_common_target_combo.addItems(common_branches)
+            self.mr_common_source_combo.blockSignals(False)
+            self.mr_common_target_combo.blockSignals(False)
+            self.mr_apply_common_btn.setEnabled(bool(common_branches))
+
             for (ws, src, _t, status), result in zip(rows, results):
                 _ws2, branches, err = result
                 if err:
@@ -958,8 +1146,37 @@ class AllProjectsTab(QWidget):
                         _t.setCurrentIndex(idx)
                 status.setText('就绪')
                 status.setStyleSheet('color: #27ae60;')
+            # 分支填充完毕后，触发一次模板变量替换
+            self._update_template_preview()
 
         run_blocking(_run, on_success=on_success, parent=self)
+
+    def _apply_common_branches(self):
+        """将共有分支选择器的值应用到所有项目的源/目标分支下拉。"""
+        source = self.mr_common_source_combo.currentText().strip()
+        target = self.mr_common_target_combo.currentText().strip()
+        applied_source = 0
+        applied_target = 0
+        for ws, src_combo, tgt_combo, status in self._mr_form_rows:
+            if source:
+                idx = src_combo.findText(source)
+                if idx >= 0:
+                    src_combo.setCurrentIndex(idx)
+                    applied_source += 1
+            if target:
+                idx = tgt_combo.findText(target)
+                if idx >= 0:
+                    tgt_combo.setCurrentIndex(idx)
+                    applied_target += 1
+            status.setText('已应用默认分支')
+            status.setStyleSheet('color: #1677ff;')
+        self._update_template_preview()
+        QMessageBox.information(
+            self, '已应用',
+            f'已为 {len(self._mr_form_rows)} 个项目应用默认分支。\n'
+            f'源分支: {source or "未选择"}\n'
+            f'目标分支: {target or "未选择"}'
+        )
 
     def run_batch_create_mr(self):
         if not self._mr_form_rows:
@@ -995,12 +1212,32 @@ class AllProjectsTab(QWidget):
             status.setStyleSheet('color: #888;')
 
         def _run():
+            from quick_create_branch import run_command
             failed = []
             outputs = []
             for ws, source, target, _status in tasks:
+                # 获取源分支的最后一次commit message
+                commit_message = ''
                 try:
-                    title = title_tpl.format(source=source, target=target, tab_name=ws.workspace_name)
-                    desc = desc_tpl.format(source=source, target=target, tab_name=ws.workspace_name)
+                    stdout, stderr = run_command(['git', 'log', source, '-1', '--pretty=%B'], ws.path)
+                    if not stderr:
+                        commit_message = stdout.strip()
+                except Exception:
+                    pass
+
+                try:
+                    title = title_tpl.format(
+                        source=source,
+                        target=target,
+                        tab_name=ws.workspace_name,
+                        commit_message=commit_message
+                    )
+                    desc = desc_tpl.format(
+                        source=source,
+                        target=target,
+                        tab_name=ws.workspace_name,
+                        commit_message=commit_message
+                    )
                 except Exception as e:
                     msg = f'模板格式错误: {e}'
                     failed.append({'project': ws.workspace_name, 'error': msg})
