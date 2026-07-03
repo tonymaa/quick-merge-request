@@ -14,10 +14,11 @@ from datetime import datetime, timedelta
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QFrame, QHBoxLayout,
-    QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QMessageBox, QPushButton, QStackedWidget, QTableWidget,
-    QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget, QFormLayout
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
+    QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget,
+    QListWidgetItem, QMessageBox, QPushButton, QStackedWidget,
+    QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
+    QFormLayout
 )
 
 from app.async_utils import run_blocking
@@ -26,8 +27,26 @@ from quick_create_branch import create_branch as create_branch_func
 from quick_generate_mr_form import (
     generate_mr, get_merge_requests, merge_merge_request,
     get_gitlab_usernames, get_branch_details, get_remote_branch_details,
-    get_branches_no_merged
+    get_branches_no_merged, truncate_mr_title
 )
+
+
+class _SafeFormatDict(dict):
+    """str.format_map 用：未知占位符返回空字符串而非 KeyError。"""
+
+    def __missing__(self, key):
+        return ''
+
+
+def _safe_format(template, **kwargs):
+    """格式化模板：未知 {var} 替换为空字符串；模板本身格式错误（如未闭合大括号）返回原文。"""
+    if not template:
+        return ''
+    try:
+        return template.format_map(_SafeFormatDict(kwargs))
+    except (ValueError, IndexError):
+        # 模板本身格式错误（例如 { 未闭合），返回原文，保留占位符让用户可见可改
+        return template
 
 
 def _enable_combo_search(combo):
@@ -135,9 +154,15 @@ class AllProjectsTab(QWidget):
         if not (0 <= row < self.content_stack.count()):
             return
         self.content_stack.setCurrentIndex(row)
-        # 进入「创建 MR」面板时，确保用户列表已加载
+        # 进入「创建 MR」面板时：确保用户列表已加载，并自动刷新一次分支
         if self.content_stack.widget(row) is self.create_mr_tab:
             self._ensure_mr_users_loaded()
+            if not self._mr_branches_auto_loaded:
+                self._mr_branches_auto_loaded = True
+                # 确保表格行已就绪，再触发一次分支拉取
+                if not self._mr_form_rows:
+                    self._rebuild_mr_form_rows()
+                self.run_batch_refresh_branches()
 
     def _build_project_selector(self):
         group = QFrame()
@@ -745,7 +770,13 @@ class AllProjectsTab(QWidget):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(10)
 
-        # 共享字段
+        # 状态：哪些行的源/目标分支是用户手动选择的，自动应用时跳过
+        self._mr_form_manual_source = set()  # ws.path 集合
+        self._mr_form_manual_target = set()
+        self._applying_common_branches = False
+        self._mr_branches_auto_loaded = False
+
+        # 共享字段（GitLab / Token / 指派 / 审查者）
         shared_form = QFormLayout()
         self.gitlab_url_input = QLineEdit(self._get_gitlab_value('gitlab_url'))
         self.gitlab_url_input.textChanged.connect(self._on_url_or_token_changed)
@@ -766,30 +797,13 @@ class AllProjectsTab(QWidget):
         assignee_row.addWidget(self.mr_assignee_combo)
         assignee_row.addWidget(self.mr_refresh_users_button)
 
-        # 模板：保存原始模板（含变量），与展示文本分离
-        self._title_template = self._get_gitlab_value('title_template', 'Draft: {commit_message}')
-        self._desc_template = self._get_gitlab_value('description_template', '{commit_message}')
-        self._template_substituting = False  # 防止程序化赋值被误认为是用户编辑
-
-        self.mr_title_input = QLineEdit()
-        self.mr_title_input.setText(self._title_template)
-        self.mr_title_input.setPlaceholderText('支持 {source} / {target} / {commit_message} 模板')
-        self.mr_title_input.textChanged.connect(self._on_title_edited)
-        self.mr_desc_input = QTextEdit()
-        self.mr_desc_input.setText(self._desc_template)
-        self.mr_desc_input.setPlaceholderText('支持 {source} / {target} / {commit_message} 模板')
-        self.mr_desc_input.textChanged.connect(self._on_desc_edited)
-        self.mr_desc_input.setMaximumHeight(80)
-
         shared_form.addRow('GitLab 地址:', self.gitlab_url_input)
         shared_form.addRow('私有 Token:', self.token_input)
         shared_form.addRow('指派给:', assignee_row)
         shared_form.addRow('审查者:', self.mr_reviewer_combo)
-        shared_form.addRow('标题模板:', self.mr_title_input)
-        shared_form.addRow('描述模板:', self.mr_desc_input)
         layout.addLayout(shared_form)
 
-        # 共有分支选择器
+        # 共有分支选择器 + 刷新按钮（放在标题模板上方）
         common_branches_layout = QHBoxLayout()
         common_branches_layout.setSpacing(12)
         self.mr_common_source_combo = NoWheelComboBox()
@@ -802,40 +816,37 @@ class AllProjectsTab(QWidget):
         self.mr_common_target_combo.setMinimumWidth(160)
         self.mr_common_target_combo.setPlaceholderText('默认目标分支')
         _enable_combo_search(self.mr_common_target_combo)
-        self.mr_apply_common_btn = QPushButton('应用到所有项目')
-        self.mr_apply_common_btn.setStyleSheet(
-            'QPushButton { background: #1677ff; color: white; border: none; border-radius: 4px; padding: 6px 14px; }'
-            'QPushButton:hover { background: #4096ff; }'
-            'QPushButton:disabled { background: #bdc3c7; }'
-        )
-        self.mr_apply_common_btn.clicked.connect(self._apply_common_branches)
-        self.mr_apply_common_btn.setEnabled(False)
+        # 选择即自动应用（手动选过的项目不会被覆盖）
+        self.mr_common_source_combo.currentIndexChanged.connect(self._auto_apply_common_branches)
+        self.mr_common_target_combo.currentIndexChanged.connect(self._auto_apply_common_branches)
+        # 刷新所有项目分支按钮（移到这里，与单 MR 侧风格一致）
+        self.mr_refresh_branches_btn = QPushButton('刷新所有项目分支')
         common_branches_layout.addWidget(QLabel('共有分支:'))
         common_branches_layout.addWidget(QLabel('源:'))
         common_branches_layout.addWidget(self.mr_common_source_combo)
         common_branches_layout.addWidget(QLabel('目标:'))
         common_branches_layout.addWidget(self.mr_common_target_combo)
-        common_branches_layout.addWidget(self.mr_apply_common_btn)
+        common_branches_layout.addWidget(self.mr_refresh_branches_btn)
         common_branches_layout.addStretch()
         layout.addLayout(common_branches_layout)
 
-        # 操作按钮
-        ops = QHBoxLayout()
-        self.mr_refresh_branches_btn = QPushButton('刷新所有项目分支')
-        self.mr_refresh_branches_btn.setStyleSheet(
-            'QPushButton { background: #f5f5f5; border: 1px solid #ddd; border-radius: 4px; padding: 6px 14px; }'
-            'QPushButton:hover { background: #e8e8e8; }'
-        )
-        self.mr_create_btn = QPushButton('批量创建合并请求')
-        self.mr_create_btn.setStyleSheet(
-            'QPushButton { background: #27ae60; color: white; border: none; border-radius: 4px; padding: 6px 14px; font-weight: bold; }'
-            'QPushButton:hover { background: #2ecc71; }'
-            'QPushButton:disabled { background: #bdc3c7; }'
-        )
-        ops.addWidget(self.mr_refresh_branches_btn)
-        ops.addStretch()
-        ops.addWidget(self.mr_create_btn)
-        layout.addLayout(ops)
+        # 标题/描述模板（移到共有分支下方）
+        self._title_template = self._get_gitlab_value('title_template', 'Draft: {commit_message}')
+        self._desc_template = self._get_gitlab_value('description_template', '{commit_message}')
+
+        tpl_form = QFormLayout()
+        self.mr_title_input = QLineEdit()
+        self.mr_title_input.setText(self._title_template)
+        self.mr_title_input.setPlaceholderText('支持 {source} / {target} / {commit_message} 模板')
+        self.mr_title_input.textChanged.connect(self._on_title_edited)
+        self.mr_desc_input = QTextEdit()
+        self.mr_desc_input.setText(self._desc_template)
+        self.mr_desc_input.setPlaceholderText('支持 {source} / {target} / {commit_message} 模板')
+        self.mr_desc_input.textChanged.connect(self._on_desc_edited)
+        self.mr_desc_input.setMaximumHeight(80)
+        tpl_form.addRow('标题模板:', self.mr_title_input)
+        tpl_form.addRow('描述模板:', self.mr_desc_input)
+        layout.addLayout(tpl_form)
 
         # 每项目行表格
         self.mr_form_table = QTableWidget()
@@ -854,8 +865,32 @@ class AllProjectsTab(QWidget):
         self.mr_form_table.setColumnWidth(3, 220)
         layout.addWidget(self.mr_form_table, stretch=1)
 
+        # 预览 + 批量创建按钮（移到表格下方）
+        bottom_btns = QHBoxLayout()
+        self.mr_preview_btn = QPushButton('预览 MR 内容')
+        self.mr_preview_btn.setMinimumHeight(38)
+        self.mr_preview_btn.setStyleSheet(
+            'QPushButton { background: #f5f5f5; color: #444; border: 1px solid #d0d0d0; '
+            'border-radius: 4px; font-weight: bold; font-size: 13px; padding: 0 18px; }'
+            'QPushButton:hover { background: #e6f0ff; border-color: #1677ff; color: #1677ff; }'
+            'QPushButton:disabled { background: #bdc3c7; color: white; border: none; }'
+        )
+        bottom_btns.addWidget(self.mr_preview_btn)
+        bottom_btns.addStretch()
+        self.mr_create_btn = QPushButton('批量创建合并请求')
+        self.mr_create_btn.setMinimumHeight(38)
+        self.mr_create_btn.setStyleSheet(
+            'QPushButton { background: #27ae60; color: white; border: none; '
+            'border-radius: 4px; font-weight: bold; font-size: 13px; }'
+            'QPushButton:hover { background: #2ecc71; }'
+            'QPushButton:disabled { background: #bdc3c7; }'
+        )
+        bottom_btns.addWidget(self.mr_create_btn)
+        layout.addLayout(bottom_btns)
+
         self.mr_refresh_branches_btn.clicked.connect(self.run_batch_refresh_branches)
         self.mr_create_btn.clicked.connect(self.run_batch_create_mr)
+        self.mr_preview_btn.clicked.connect(self.run_preview_mr_content)
         self.mr_refresh_users_button.clicked.connect(self.run_refresh_users)
 
         # 自动加载用户列表，并在加载完成后应用 config 中保存的默认值
@@ -886,9 +921,9 @@ class AllProjectsTab(QWidget):
             _enable_combo_search(tgt_combo)
             src_combo.addItems(['(待刷新)'])
             tgt_combo.addItems(['(待刷新)'])
-            # 分支切换时实时更新标题/描述模板的变量替换
-            src_combo.currentIndexChanged.connect(self._update_template_preview)
-            tgt_combo.currentIndexChanged.connect(self._update_template_preview)
+            # 分支切换：标记手动选择 + 实时更新模板预览
+            src_combo.currentIndexChanged.connect(lambda _i, w=ws: self._on_row_src_changed(w))
+            tgt_combo.currentIndexChanged.connect(lambda _i, w=ws: self._on_row_tgt_changed(w))
 
             status_label = QLabel('—')
             status_label.setAlignment(Qt.AlignCenter)
@@ -988,51 +1023,13 @@ class AllProjectsTab(QWidget):
             self._set_gitlab_value('mr_reviewer', reviewer)
 
     def _on_title_edited(self, text):
-        if self._template_substituting:
-            return
         self._title_template = text
         self._set_gitlab_value('title_template', text)
 
     def _on_desc_edited(self):
-        if self._template_substituting:
-            return
         text = self.mr_desc_input.toPlainText()
         self._desc_template = text
         self._set_gitlab_value('description_template', text)
-
-    def _update_template_preview(self):
-        """根据当前第一行已选分支，实时把模板中的变量替换并写回输入框。"""
-        source = ''
-        target = ''
-        for ws, src_combo, tgt_combo, _status in self._mr_form_rows:
-            s = src_combo.currentText().strip()
-            t = tgt_combo.currentText().strip()
-            if s and s != '(待刷新)':
-                source = s
-            if t and t != '(待刷新)':
-                target = t
-            if source and target:
-                break
-
-        try:
-            title = self._title_template.format(
-                source=source, target=target,
-                commit_message=source or '<commit>', tab_name='<workspace>'
-            )
-        except Exception:
-            title = self._title_template
-        try:
-            desc = self._desc_template.format(
-                source=source, target=target,
-                commit_message=source or '<commit>', tab_name='<workspace>'
-            )
-        except Exception:
-            desc = self._desc_template
-
-        self._template_substituting = True
-        self.mr_title_input.setText(title)
-        self.mr_desc_input.setText(desc)
-        self._template_substituting = False
 
     def _populate_user_combos(self, users):
         # 批量创建 MR 的指派给/审查者：优先保留当前选择；
@@ -1121,7 +1118,6 @@ class AllProjectsTab(QWidget):
             self.mr_common_target_combo.addItems(common_branches)
             self.mr_common_source_combo.blockSignals(False)
             self.mr_common_target_combo.blockSignals(False)
-            self.mr_apply_common_btn.setEnabled(bool(common_branches))
 
             for (ws, src, _t, status), result in zip(rows, results):
                 _ws2, branches, err = result
@@ -1138,45 +1134,190 @@ class AllProjectsTab(QWidget):
                 _t.addItems(branches)
                 src.blockSignals(False)
                 _t.blockSignals(False)
-                # 尝试默认选 config 里第一个 target_branch
+                # 尝试默认选 config 里第一个 target_branch（程序化设置，不算用户手动）
+                self._applying_common_branches = True
                 targets = self._read_target_branches_for(ws)
                 if targets:
                     idx = _t.findText(targets[0])
                     if idx >= 0:
                         _t.setCurrentIndex(idx)
+                self._applying_common_branches = False
                 status.setText('就绪')
                 status.setStyleSheet('color: #27ae60;')
-            # 分支填充完毕后，触发一次模板变量替换
-            self._update_template_preview()
 
         run_blocking(_run, on_success=on_success, parent=self)
 
-    def _apply_common_branches(self):
-        """将共有分支选择器的值应用到所有项目的源/目标分支下拉。"""
+    def _on_row_src_changed(self, ws):
+        """单行源分支被切换：记录手动选择（除非正在自动应用共有分支）。"""
+        if not self._applying_common_branches:
+            self._mr_form_manual_source.add(ws.path)
+
+    def _on_row_tgt_changed(self, ws):
+        """单行目标分支被切换：记录手动选择（除非正在自动应用共有分支）。"""
+        if not self._applying_common_branches:
+            self._mr_form_manual_target.add(ws.path)
+
+    def _auto_apply_common_branches(self):
+        """共有分支变化时自动应用到所有项目行（手动选过的项目除外）。"""
         source = self.mr_common_source_combo.currentText().strip()
         target = self.mr_common_target_combo.currentText().strip()
-        applied_source = 0
-        applied_target = 0
+        if not source and not target:
+            return
+        self._applying_common_branches = True
         for ws, src_combo, tgt_combo, status in self._mr_form_rows:
-            if source:
+            if source and ws.path not in self._mr_form_manual_source:
                 idx = src_combo.findText(source)
-                if idx >= 0:
+                if idx >= 0 and src_combo.currentIndex() != idx:
                     src_combo.setCurrentIndex(idx)
-                    applied_source += 1
-            if target:
+            if target and ws.path not in self._mr_form_manual_target:
                 idx = tgt_combo.findText(target)
-                if idx >= 0:
+                if idx >= 0 and tgt_combo.currentIndex() != idx:
                     tgt_combo.setCurrentIndex(idx)
-                    applied_target += 1
             status.setText('已应用默认分支')
             status.setStyleSheet('color: #1677ff;')
-        self._update_template_preview()
-        QMessageBox.information(
-            self, '已应用',
-            f'已为 {len(self._mr_form_rows)} 个项目应用默认分支。\n'
-            f'源分支: {source or "未选择"}\n'
-            f'目标分支: {target or "未选择"}'
+        self._applying_common_branches = False
+
+    def run_preview_mr_content(self):
+        """弹出对话框，展示每个项目最终生成的 MR 标题/描述。"""
+        if not self._mr_form_rows:
+            QMessageBox.information(self, '提示', '请先点「刷新所有项目分支」。')
+            return
+        title_tpl = self._title_template or '{source}'
+        desc_tpl = self._desc_template
+        url = self.gitlab_url_input.text().strip()
+        token = self.token_input.text().strip()
+        assignee = self.mr_assignee_combo.currentText().strip()
+        reviewer = self.mr_reviewer_combo.currentText().strip()
+
+        self.mr_preview_btn.setEnabled(False)
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+
+        rows_data = list(self._mr_form_rows)
+
+        def _run():
+            from quick_create_branch import run_command
+            results = []
+            for ws, src, tgt, _status in rows_data:
+                source = src.currentText().strip()
+                target = tgt.currentText().strip()
+                if source in ('', '(待刷新)') or target in ('', '(待刷新)'):
+                    results.append({
+                        'project': ws.workspace_name or ws.path,
+                        'source': source, 'target': target,
+                        'title': '（跳过：未选分支）', 'desc': '', 'skipped': True,
+                    })
+                    continue
+                commit_message = ''
+                try:
+                    ok, stdout, stderr = run_command(
+                        ['git', 'log', source, '-1', '--pretty=%B'], ws.path
+                    )
+                    if ok:
+                        commit_message = stdout.strip()
+                except Exception:
+                    pass
+                title = truncate_mr_title(_safe_format(
+                    title_tpl, source=source, target=target,
+                    tab_name=ws.workspace_name or '', commit_message=commit_message,
+                ))
+                desc = _safe_format(
+                    desc_tpl, source=source, target=target,
+                    tab_name=ws.workspace_name or '', commit_message=commit_message,
+                )
+                results.append({
+                    'project': ws.workspace_name or ws.path,
+                    'source': source, 'target': target,
+                    'title': title, 'desc': desc, 'skipped': False,
+                })
+            return results
+
+        def on_success(results):
+            self.mr_preview_btn.setEnabled(True)
+            QApplication.restoreOverrideCursor()
+            self._show_mr_preview_dialog(results, assignee, reviewer, url)
+
+        def on_error(_exc):
+            self.mr_preview_btn.setEnabled(True)
+            QApplication.restoreOverrideCursor()
+
+        run_blocking(_run, on_success=on_success, on_error=on_error, parent=self)
+
+    def _show_mr_preview_dialog(self, results, assignee, reviewer, url):
+        """渲染预览对话框：左侧项目列表，右侧标题/描述。"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle('MR 内容预览')
+        dialog.resize(900, 600)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+
+        meta = QLabel(
+            f'GitLab: {url or "<未填>"}    '
+            f'指派给: {assignee or "<未选>"}    '
+            f'审查者: {reviewer or "<未选>"}'
         )
+        meta.setStyleSheet('color: #666;')
+        layout.addWidget(meta)
+
+        splitter_layout = QHBoxLayout()
+        splitter_layout.setSpacing(8)
+
+        project_list = QListWidget()
+        project_list.setMaximumWidth(220)
+        for i, r in enumerate(results):
+            label = r['project']
+            if r.get('skipped'):
+                label += '（跳过）'
+            item = QListWidgetItem(label)
+            item.setData(Qt.UserRole, i)
+            if r.get('skipped'):
+                item.setForeground(QColor('#999'))
+            project_list.addItem(item)
+        splitter_layout.addWidget(project_list)
+
+        right_box = QVBoxLayout()
+        right_box.setSpacing(6)
+        title_label = QLabel('<b>标题:</b>')
+        title_value = QLabel('')
+        title_value.setWordWrap(True)
+        title_value.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        title_value.setStyleSheet(
+            'QLabel { background: #f8f9fa; border: 1px solid #e9ecef;'
+            ' border-radius: 4px; padding: 8px; }'
+        )
+        title_value.setMinimumHeight(36)
+        title_value.setAlignment(Qt.AlignTop)
+        desc_label = QLabel('<b>描述:</b>')
+        desc_value = QTextEdit()
+        desc_value.setReadOnly(True)
+        right_box.addWidget(title_label)
+        right_box.addWidget(title_value, stretch=0)
+        right_box.addWidget(desc_label)
+        right_box.addStretch(0)
+        right_box.addWidget(desc_value, stretch=1)
+        splitter_layout.addLayout(right_box, stretch=1)
+        layout.addLayout(splitter_layout, stretch=1)
+
+        def _show(idx):
+            if not 0 <= idx < len(results):
+                return
+            r = results[idx]
+            title_value.setText(r['title'])
+            desc_value.setPlainText(r['desc'])
+
+        project_list.currentRowChanged.connect(_show)
+        if results:
+            project_list.setCurrentRow(0)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        close_btn = QPushButton('关闭')
+        close_btn.setMinimumHeight(32)
+        close_btn.clicked.connect(dialog.accept)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+        dialog.exec_()
 
     def run_batch_create_mr(self):
         if not self._mr_form_rows:
@@ -1189,8 +1330,10 @@ class AllProjectsTab(QWidget):
             return
         assignee = self.mr_assignee_combo.currentText().strip()
         reviewer = self.mr_reviewer_combo.currentText().strip()
-        title_tpl = self.mr_title_input.text().strip() or '{source}'
-        desc_tpl = self.mr_desc_input.toPlainText().strip()
+        # 用模板原文（_title_template / _desc_template），不是预览替换后的输入框文本，
+        # 这样 {commit_message} 等占位符才能在创建时用真实 git log 替换。
+        title_tpl = self._title_template or '{source}'
+        desc_tpl = self._desc_template
 
         tasks = []
         for ws, src, tgt, status in self._mr_form_rows:
@@ -1219,30 +1362,22 @@ class AllProjectsTab(QWidget):
                 # 获取源分支的最后一次commit message
                 commit_message = ''
                 try:
-                    stdout, stderr = run_command(['git', 'log', source, '-1', '--pretty=%B'], ws.path)
-                    if not stderr:
+                    ok, stdout, _stderr = run_command(
+                        ['git', 'log', source, '-1', '--pretty=%B'], ws.path
+                    )
+                    if ok:
                         commit_message = stdout.strip()
                 except Exception:
                     pass
 
-                try:
-                    title = title_tpl.format(
-                        source=source,
-                        target=target,
-                        tab_name=ws.workspace_name,
-                        commit_message=commit_message
-                    )
-                    desc = desc_tpl.format(
-                        source=source,
-                        target=target,
-                        tab_name=ws.workspace_name,
-                        commit_message=commit_message
-                    )
-                except Exception as e:
-                    msg = f'模板格式错误: {e}'
-                    failed.append({'project': ws.workspace_name, 'error': msg})
-                    outputs.append((ws, source, target, msg, False))
-                    continue
+                title = _safe_format(
+                    title_tpl, source=source, target=target,
+                    tab_name=ws.workspace_name or '', commit_message=commit_message,
+                )
+                desc = _safe_format(
+                    desc_tpl, source=source, target=target,
+                    tab_name=ws.workspace_name or '', commit_message=commit_message,
+                )
                 try:
                     out = generate_mr(ws.path, url, token, assignee, reviewer, source, title, desc, target)
                     ok = 'Successfully created MR!' in out

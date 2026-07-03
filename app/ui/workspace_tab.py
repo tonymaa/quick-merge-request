@@ -19,7 +19,7 @@ from quick_generate_mr_form import (
     parse_target_branch_from_source, get_gitlab_usernames, get_branch_diff,
     get_commits_between_branches, get_branch_details, get_branches_no_merged,
     get_remote_branch_details, get_remote_url,
-    get_merge_requests, merge_merge_request
+    get_merge_requests, merge_merge_request, truncate_mr_title
 )
 from app.widgets import NoWheelComboBox, enable_combo_search as util_enable_combo_search
 from PyQt5.QtWidgets import QScrollArea, QLabel
@@ -1011,10 +1011,12 @@ class WorkspaceTab(QWidget):
             self.mr_description_input.setPlainText(defaults['description'])
 
     def run_create_mr(self):
+        # 标题强制截断到 72 字符，提交与确认对话框都用截断后的版本
+        final_title = truncate_mr_title(self.mr_title_input.text())
         reply = QMessageBox.question(self, '确认创建Merge Request吗？',
                                      f"源分支: {self.source_branch_combo.currentText()}\n"
                                      f"目标分支: {self.mr_target_branch_combo.currentText()}\n"
-                                     f"标题: {self.mr_title_input.text()}\n"
+                                     f"标题: {final_title}\n"
                                      f"描述: \n{self.mr_description_input.toPlainText()}",
                                      QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply == QMessageBox.No:
@@ -1030,7 +1032,7 @@ class WorkspaceTab(QWidget):
                 self.assignee_combo.currentText(),
                 self.reviewer_combo.currentText(),
                 self.source_branch_combo.currentText(),
-                self.mr_title_input.text(),
+                final_title,
                 self.mr_description_input.toPlainText(),
                 self.mr_target_branch_combo.currentText()
             )

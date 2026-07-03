@@ -3,6 +3,19 @@ import re
 from urllib.parse import urlparse
 import subprocess
 
+MR_TITLE_MAX_LENGTH = 72
+
+
+def truncate_mr_title(title):
+    """强制截断 MR 标题，最多 MR_TITLE_MAX_LENGTH 字符。"""
+    if not title:
+        return ''
+    title = title.strip()
+    if len(title) <= MR_TITLE_MAX_LENGTH:
+        return title
+    return title[:MR_TITLE_MAX_LENGTH]
+
+
 def run_command(command, directory):
     try:
         result = subprocess.run(command, cwd=directory, capture_output=True, text=True, check=True, shell=False, encoding='utf-8', errors='replace')
@@ -185,6 +198,8 @@ def generate_mr(directory, gitlab_url, token, assignee_user, reviewer_user, sour
     if not source_branch:
         return 'Please select a source branch.'
 
+    # 强制截断标题：GitLab/Git 习惯标题不超过 72 字符
+    title = truncate_mr_title(title)
 
     # Get project
     stdout, stderr = run_command(['git', 'remote', '-v'], directory)
