@@ -2,7 +2,8 @@ import subprocess
 
 def run_command(command, directory):
     try:
-        result = subprocess.run(command, cwd=directory, capture_output=True, text=True, check=True, shell=True)
+        result = subprocess.run(command, cwd=directory, capture_output=True, text=True,
+                                encoding='utf-8', errors='replace', check=True, shell=True)
         return True, result.stdout, result.stderr
     except subprocess.CalledProcessError as e:
         return False, e.stdout, e.stderr
@@ -39,7 +40,7 @@ def create_branch(directory, target_branch, new_branch):
         new_branch_name
     ]
         # 设置upstream
-    set_upstream_branch_result = subprocess.run(set_branch_upstream_command, cwd=directory, capture_output=True, text=True)
+    set_upstream_branch_result = subprocess.run(set_branch_upstream_command, cwd=directory, capture_output=True, text=True, encoding='utf-8', errors='replace')
 
     # 输出 branch 命令的结果
     outputs.append("Branch STDOUT:")

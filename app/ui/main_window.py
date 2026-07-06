@@ -22,9 +22,10 @@ class App(QWidget):
         self.title = 'GitLab 快捷工具'
         self.left = 100
         self.top = 100
-        self.width = 800
-        self.height = 700
-        self.config_file = 'config.xml'
+        self.width = 1000
+        self.height = 800
+        # 启动时恢复上次使用的 config 文件，找不到则回退到默认 config.xml
+        self.config_file = self._load_last_config_file()
         self.config = self.load_config()
         self.git_watcher = get_global_watcher()
         # 设置主窗口引用，用于通知按钮点击时打开对话框
@@ -34,6 +35,29 @@ class App(QWidget):
         self.init_system_tray()
         # 启动定时器检查待处理的创建 MR 请求
         self._start_pending_mr_checker()
+
+    _LAST_CONFIG_KEY = 'last_config_file'
+
+    def _load_last_config_file(self):
+        """读取上次使用的 config 文件名，文件不存在时回退到 config.xml。"""
+        try:
+            import shelve
+            with shelve.open('cache.db') as db:
+                name = db.get(self._LAST_CONFIG_KEY)
+            if name and os.path.isfile(name):
+                return name
+        except Exception:
+            pass
+        return 'config.xml'
+
+    def _save_last_config_file(self):
+        """持久化当前 config 文件名，下次启动时恢复。"""
+        try:
+            import shelve
+            with shelve.open('cache.db', writeback=True) as db:
+                db[self._LAST_CONFIG_KEY] = self.config_file
+        except Exception:
+            pass
 
     def load_config(self):
         try:
@@ -114,6 +138,7 @@ class App(QWidget):
         if hasattr(self, 'all_projects_tab'):
             self.all_projects_tab.reload_config(self.config)
             self.all_projects_tab.refresh_projects()
+        self._save_last_config_file()
 
     def clear_all_workspaces(self):
         """清除所有工作区标签页"""
@@ -182,6 +207,7 @@ class App(QWidget):
         self.config = self.load_config()
         self.load_workspaces()
         self.refresh_config_combo()
+        self._save_last_config_file()
 
     def initUI(self):
         self.setWindowTitle(self.title)
@@ -495,6 +521,7 @@ class App(QWidget):
     def quit_app(self):
         """完全退出程序"""
         self.save_config()
+        self._save_last_config_file()
         if hasattr(self, '_pending_mr_timer'):
             self._pending_mr_timer.stop()
         self.git_watcher.stop_all()

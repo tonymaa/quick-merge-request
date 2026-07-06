@@ -28,6 +28,9 @@ cache.db.*
 config*.xml
 !config.example.xml
 
+# runtime app state (active config file, etc.)
+.quick_mr_state.json
+
 # ===== Logs =====
 *.log
 

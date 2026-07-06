@@ -8,6 +8,7 @@
 
 错误处理：单项目失败不打断其他项目，末尾汇总弹窗。
 """
+import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 
@@ -27,7 +28,7 @@ from quick_create_branch import create_branch as create_branch_func
 from quick_generate_mr_form import (
     generate_mr, get_merge_requests, merge_merge_request,
     get_gitlab_usernames, get_branch_details, get_remote_branch_details,
-    get_branches_no_merged, truncate_mr_title
+    get_branches_no_merged, truncate_mr_title, parse_target_branch_from_source
 )
 
 
@@ -47,6 +48,14 @@ def _safe_format(template, **kwargs):
     except (ValueError, IndexError):
         # 模板本身格式错误（例如 { 未闭合），返回原文，保留占位符让用户可见可改
         return template
+
+
+def _extract_tg_number_from_title(title):
+    """从已格式化的标题里提取 taiga 编号（如 'tg-123 xxx' -> '123'）。找不到返回空串。"""
+    if not title:
+        return ''
+    m = re.search(r'tg-(\d+)', title, re.IGNORECASE)
+    return m.group(1) if m else ''
 
 
 def _enable_combo_search(combo):
@@ -94,7 +103,10 @@ class AllProjectsTab(QWidget):
         self._branch_mgmt_protected = {}     # path -> set(protected branch names)
 
         # 批量创建 MR 的每项目行数据
-        self._mr_form_rows = []              # list[(workspace_tab, source_combo, target_combo, status_label)]
+        # list[(ws, checkbox, src_combo, tgt_combo, commit_msg_label, commit_time_label, status_label)]
+        self._mr_form_rows = []
+        # 重建行时保留的旧选择（path -> (source_text, target_text)）
+        self._mr_form_old_cache = {}
 
         # 批量创建分支：聚合分支 → 拥有该分支的 WorkspaceTab 列表
         self._cb_branch_projects = {}
@@ -323,6 +335,11 @@ class AllProjectsTab(QWidget):
         else:
             self._checked_paths.discard(path)
         self._refresh_project_chips()
+        # 同步刷新「批量创建 MR」表格里的项目行
+        self._rebuild_mr_form_rows()
+        # 若用户已经加载过分支，自动重新刷新分支（恢复旧的源/目标选择）
+        if self._mr_branches_auto_loaded:
+            self.run_batch_refresh_branches()
 
     def _set_all_checked(self, checked):
         state = Qt.Checked if checked else Qt.Unchecked
@@ -335,6 +352,10 @@ class AllProjectsTab(QWidget):
             for i in range(self.project_list.count()):
                 self._checked_paths.add(self.project_list.item(i).data(Qt.UserRole))
         self._refresh_project_chips()
+        # 同步刷新「批量创建 MR」表格里的项目行
+        self._rebuild_mr_form_rows()
+        if self._mr_branches_auto_loaded:
+            self.run_batch_refresh_branches()
 
     def refresh_projects(self):
         """重建项目勾选列表。保留用户已有勾选状态（按 path 记忆），新增项目默认勾选。"""
@@ -468,10 +489,6 @@ class AllProjectsTab(QWidget):
 
         top_bar = QHBoxLayout()
         self.cb_refresh_branches_btn = QPushButton('刷新所有项目分支')
-        self.cb_refresh_branches_btn.setStyleSheet(
-            'QPushButton { background: #f5f5f5; border: 1px solid #ddd; border-radius: 4px; padding: 6px 14px; }'
-            'QPushButton:hover { background: #e8e8e8; }'
-        )
         self.cb_branches_status = QLabel('尚未加载分支。')
         self.cb_branches_status.setStyleSheet('color: #888;')
         top_bar.addWidget(self.cb_refresh_branches_btn)
@@ -848,21 +865,48 @@ class AllProjectsTab(QWidget):
         tpl_form.addRow('描述模板:', self.mr_desc_input)
         layout.addLayout(tpl_form)
 
+        # 表格上方工具栏：勾选控制
+        table_ops = QHBoxLayout()
+        table_ops.setSpacing(6)
+        self.mr_select_all_btn = QPushButton('全选')
+        self.mr_select_none_btn = QPushButton('全不选')
+        for b in (self.mr_select_all_btn, self.mr_select_none_btn):
+            b.setFixedHeight(24)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setStyleSheet(
+                'QPushButton { background: white; border: 1px solid #d0d0d0; border-radius: 4px; '
+                'padding: 0 12px; color: #444; }'
+                'QPushButton:hover { background: #f0f7ff; border-color: #1677ff; color: #1677ff; }'
+            )
+            table_ops.addWidget(b)
+        self.mr_row_count_label = QLabel('')
+        self.mr_row_count_label.setStyleSheet('color: #888;')
+        table_ops.addWidget(self.mr_row_count_label)
+        table_ops.addStretch()
+        layout.addLayout(table_ops)
+
         # 每项目行表格
         self.mr_form_table = QTableWidget()
-        self.mr_form_table.setColumnCount(4)
-        self.mr_form_table.setHorizontalHeaderLabels(['项目', '源分支', '目标分支', '状态'])
+        self.mr_form_table.setColumnCount(7)
+        self.mr_form_table.setHorizontalHeaderLabels(
+            ['', '项目', '源分支', '目标分支', '最新提交', '提交时间', '状态']
+        )
         self.mr_form_table.setAlternatingRowColors(True)
         self.mr_form_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.mr_form_table.verticalHeader().setVisible(False)
         self.mr_form_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         hdr = self.mr_form_table.horizontalHeader()
         hdr.setSectionResizeMode(0, QHeaderView.Fixed)
-        hdr.setSectionResizeMode(1, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(1, QHeaderView.Fixed)
         hdr.setSectionResizeMode(2, QHeaderView.Stretch)
-        hdr.setSectionResizeMode(3, QHeaderView.Fixed)
-        self.mr_form_table.setColumnWidth(0, 160)
-        self.mr_form_table.setColumnWidth(3, 220)
+        hdr.setSectionResizeMode(3, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(4, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(5, QHeaderView.Fixed)
+        hdr.setSectionResizeMode(6, QHeaderView.Fixed)
+        self.mr_form_table.setColumnWidth(0, 36)
+        self.mr_form_table.setColumnWidth(1, 160)
+        self.mr_form_table.setColumnWidth(5, 160)
+        self.mr_form_table.setColumnWidth(6, 220)
         layout.addWidget(self.mr_form_table, stretch=1)
 
         # 预览 + 批量创建按钮（移到表格下方）
@@ -892,6 +936,8 @@ class AllProjectsTab(QWidget):
         self.mr_create_btn.clicked.connect(self.run_batch_create_mr)
         self.mr_preview_btn.clicked.connect(self.run_preview_mr_content)
         self.mr_refresh_users_button.clicked.connect(self.run_refresh_users)
+        self.mr_select_all_btn.clicked.connect(lambda: self._set_all_mr_rows_checked(True))
+        self.mr_select_none_btn.clicked.connect(lambda: self._set_all_mr_rows_checked(False))
 
         # 自动加载用户列表，并在加载完成后应用 config 中保存的默认值
         self._load_users_into_combos_async()
@@ -901,19 +947,39 @@ class AllProjectsTab(QWidget):
     def _rebuild_mr_form_rows(self):
         """根据当前勾选项目，重建「批量创建 MR」表格行。保留已选分支（按 path+branch 缓存）。"""
         selected = self._selected_workspace_tabs()
-        # 保留旧选择
+        # 保留旧选择（path -> (source_text, target_text)），refresh 完成后重新应用
         old_cache = {}
-        for ws, src_combo, tgt_combo, _status in self._mr_form_rows:
+        old_check_state = {}
+        for row_data in self._mr_form_rows:
+            ws, cb, src_combo, tgt_combo, _msg, _time, _status = row_data
             try:
                 old_cache[ws.path] = (src_combo.currentText(), tgt_combo.currentText())
+                old_check_state[ws.path] = cb.isChecked()
             except Exception:
                 pass
+        self._mr_form_old_cache = old_cache
 
-        self.mr_form_table.setRowCount(len(selected))
+        # 先清空再重建：避免 setRowCount 收缩时 cell widget 残留导致行数不对
+        self.mr_form_table.setRowCount(0)
         self._mr_form_rows = []
+
         for row, ws in enumerate(selected):
+            self.mr_form_table.insertRow(row)
+
+            # 复选框（默认勾选；重建时尽量保留之前的状态）
+            cb = QCheckBox()
+            cb.toggled.connect(lambda _v=False: self._refresh_mr_row_count())
+            cb_container = QWidget()
+            cb_layout = QHBoxLayout(cb_container)
+            cb_layout.setContentsMargins(0, 0, 0, 0)
+            cb_layout.setAlignment(Qt.AlignCenter)
+            cb_layout.addWidget(cb)
+            self.mr_form_table.setCellWidget(row, 0, cb_container)
+            # setChecked 放到 addCellWidget 之后，避免信号在挂上控件前触发
+            cb.setChecked(old_check_state.get(ws.path, True))
+
             name_item = QTableWidgetItem(ws.workspace_name or ws.path)
-            self.mr_form_table.setItem(row, 0, name_item)
+            self.mr_form_table.setItem(row, 1, name_item)
 
             src_combo = NoWheelComboBox()
             tgt_combo = NoWheelComboBox()
@@ -921,17 +987,29 @@ class AllProjectsTab(QWidget):
             _enable_combo_search(tgt_combo)
             src_combo.addItems(['(待刷新)'])
             tgt_combo.addItems(['(待刷新)'])
-            # 分支切换：标记手动选择 + 实时更新模板预览
+            # 分支切换：标记手动选择 + 实时更新 commit 信息
             src_combo.currentIndexChanged.connect(lambda _i, w=ws: self._on_row_src_changed(w))
             tgt_combo.currentIndexChanged.connect(lambda _i, w=ws: self._on_row_tgt_changed(w))
+
+            commit_msg_label = QLabel('—')
+            commit_msg_label.setStyleSheet('color: #888;')
+            commit_msg_label.setWordWrap(False)
+            commit_time_label = QLabel('—')
+            commit_time_label.setStyleSheet('color: #888;')
 
             status_label = QLabel('—')
             status_label.setAlignment(Qt.AlignCenter)
 
-            self.mr_form_table.setCellWidget(row, 1, src_combo)
-            self.mr_form_table.setCellWidget(row, 2, tgt_combo)
-            self.mr_form_table.setCellWidget(row, 3, status_label)
-            self._mr_form_rows.append((ws, src_combo, tgt_combo, status_label))
+            self.mr_form_table.setCellWidget(row, 2, src_combo)
+            self.mr_form_table.setCellWidget(row, 3, tgt_combo)
+            self.mr_form_table.setCellWidget(row, 4, commit_msg_label)
+            self.mr_form_table.setCellWidget(row, 5, commit_time_label)
+            self.mr_form_table.setCellWidget(row, 6, status_label)
+            self._mr_form_rows.append(
+                (ws, cb, src_combo, tgt_combo, commit_msg_label, commit_time_label, status_label)
+            )
+
+        self._refresh_mr_row_count()
 
     def run_refresh_users(self, save_default=False, silent=False):
         url = self.gitlab_url_input.text().strip()
@@ -1083,13 +1161,17 @@ class AllProjectsTab(QWidget):
             self.run_refresh_users(save_default=True, silent=True)
 
         self.mr_refresh_branches_btn.setEnabled(False)
-        for _ws, _s, _t, status in rows:
-            status.setText('加载中...')
+        for row_data in rows:
+            row_data[6].setText('加载中...')
+
+        # 取出旧选择缓存，供 on_success 重新应用
+        old_cache = getattr(self, '_mr_form_old_cache', {}) or {}
 
         def _run():
             results = []
             all_branch_sets = []
-            for ws, _s, _t, _status in rows:
+            for row_data in rows:
+                ws = row_data[0]
                 try:
                     # 远程分支作为源和目标候选
                     branches, msg = _safe_get_remote_branches(ws.path)
@@ -1119,7 +1201,9 @@ class AllProjectsTab(QWidget):
             self.mr_common_source_combo.blockSignals(False)
             self.mr_common_target_combo.blockSignals(False)
 
-            for (ws, src, _t, status), result in zip(rows, results):
+            self._applying_common_branches = True
+            for row_data, result in zip(rows, results):
+                ws, _cb, src, _t, _msg, _time, status = row_data
                 _ws2, branches, err = result
                 if err:
                     status.setText(f'失败: {err[:40]}')
@@ -1132,39 +1216,134 @@ class AllProjectsTab(QWidget):
                 _t.clear()
                 src.addItems(branches)
                 _t.addItems(branches)
+                # 优先恢复旧选择；否则默认选 config 里第一个 target_branch
+                old_src, old_tgt = old_cache.get(ws.path, ('', ''))
+                # 程序化设置，不算用户手动
+                apply_src_idx = -1
+                apply_tgt_idx = -1
+                if old_src and old_src != '(待刷新)':
+                    apply_src_idx = src.findText(old_src)
+                if old_tgt and old_tgt != '(待刷新)':
+                    apply_tgt_idx = _t.findText(old_tgt)
+                else:
+                    targets = self._read_target_branches_for(ws)
+                    if targets:
+                        apply_tgt_idx = _t.findText(targets[0])
+                if apply_src_idx >= 0:
+                    src.setCurrentIndex(apply_src_idx)
+                if apply_tgt_idx >= 0:
+                    _t.setCurrentIndex(apply_tgt_idx)
                 src.blockSignals(False)
                 _t.blockSignals(False)
-                # 尝试默认选 config 里第一个 target_branch（程序化设置，不算用户手动）
-                self._applying_common_branches = True
-                targets = self._read_target_branches_for(ws)
-                if targets:
-                    idx = _t.findText(targets[0])
-                    if idx >= 0:
-                        _t.setCurrentIndex(idx)
-                self._applying_common_branches = False
                 status.setText('就绪')
                 status.setStyleSheet('color: #27ae60;')
+            self._applying_common_branches = False
+
+            # 旧缓存已应用，清空避免下次误用
+            self._mr_form_old_cache = {}
+
+            # 拉取每行的 commit 信息
+            for row_data in rows:
+                self._update_commit_info_for_row(row_data)
 
         run_blocking(_run, on_success=on_success, parent=self)
 
     def _on_row_src_changed(self, ws):
-        """单行源分支被切换：记录手动选择（除非正在自动应用共有分支）。"""
+        """单行源分支被切换：记录手动选择（除非正在自动应用共有分支），并刷新 commit 信息。"""
         if not self._applying_common_branches:
             self._mr_form_manual_source.add(ws.path)
+        # 拉取最新 commit 信息
+        for row_data in self._mr_form_rows:
+            if row_data[0] is ws:
+                self._update_commit_info_for_row(row_data)
+                break
 
     def _on_row_tgt_changed(self, ws):
         """单行目标分支被切换：记录手动选择（除非正在自动应用共有分支）。"""
         if not self._applying_common_branches:
             self._mr_form_manual_target.add(ws.path)
 
+    def _update_commit_info_for_row(self, row_data):
+        """异步获取源分支最新 commit 主题与时间，更新到对应行的标签。"""
+        ws, _cb, src_combo, _tgt, msg_label, time_label, _status = row_data
+        source = src_combo.currentText().strip()
+        if not source or source == '(待刷新)':
+            msg_label.setText('—')
+            msg_label.setToolTip('')
+            msg_label.setStyleSheet('color: #888;')
+            time_label.setText('—')
+            time_label.setStyleSheet('color: #888;')
+            return
+
+        msg_label.setText('加载中...')
+        msg_label.setStyleSheet('color: #888;')
+
+        def _run():
+            from quick_create_branch import run_command
+            commit_subject = ''
+            commit_time = ''
+            try:
+                ok, stdout, _stderr = run_command(
+                    ['git', 'log', source, '-1', '--pretty=%s%n%ci'], ws.path
+                )
+                if ok:
+                    lines = stdout.strip().split('\n', 1)
+                    commit_subject = lines[0] if lines else ''
+                    commit_time = lines[1].strip() if len(lines) > 1 else ''
+            except Exception:
+                pass
+            return commit_subject, commit_time
+
+        def on_success(result):
+            commit_subject, commit_time = result
+            if commit_subject:
+                msg_label.setText(commit_subject)
+                msg_label.setToolTip(commit_subject)
+                msg_label.setStyleSheet('color: #333;')
+            else:
+                msg_label.setText('（无）')
+                msg_label.setToolTip('')
+                msg_label.setStyleSheet('color: #999;')
+            if commit_time:
+                time_label.setText(commit_time[:19].replace('T', ' '))
+                time_label.setToolTip(commit_time)
+                time_label.setStyleSheet('color: #333;')
+            else:
+                time_label.setText('—')
+                time_label.setStyleSheet('color: #888;')
+
+        run_blocking(_run, on_success=on_success, parent=self)
+
+    def _set_all_mr_rows_checked(self, checked):
+        for row_data in self._mr_form_rows:
+            row_data[1].setChecked(checked)
+        self._refresh_mr_row_count()
+
+    def _refresh_mr_row_count(self):
+        total = len(self._mr_form_rows)
+        if total == 0:
+            self.mr_row_count_label.setText('')
+            return
+        checked = sum(1 for r in self._mr_form_rows if r[1].isChecked())
+        self.mr_row_count_label.setText(f'{checked} / {total} 行将创建')
+
     def _auto_apply_common_branches(self):
         """共有分支变化时自动应用到所有项目行（手动选过的项目除外）。"""
         source = self.mr_common_source_combo.currentText().strip()
+        # 源分支带 __from__ 标记时，自动解析并设置共有目标分支
+        parsed_target = parse_target_branch_from_source(source) if source else None
+        if parsed_target:
+            idx = self.mr_common_target_combo.findText(parsed_target)
+            if idx >= 0 and self.mr_common_target_combo.currentIndex() != idx:
+                self.mr_common_target_combo.blockSignals(True)
+                self.mr_common_target_combo.setCurrentIndex(idx)
+                self.mr_common_target_combo.blockSignals(False)
         target = self.mr_common_target_combo.currentText().strip()
         if not source and not target:
             return
         self._applying_common_branches = True
-        for ws, src_combo, tgt_combo, status in self._mr_form_rows:
+        for row_data in self._mr_form_rows:
+            ws, _cb, src_combo, tgt_combo, _msg, _time, status = row_data
             if source and ws.path not in self._mr_form_manual_source:
                 idx = src_combo.findText(source)
                 if idx >= 0 and src_combo.currentIndex() != idx:
@@ -1176,6 +1355,9 @@ class AllProjectsTab(QWidget):
             status.setText('已应用默认分支')
             status.setStyleSheet('color: #1677ff;')
         self._applying_common_branches = False
+        # 共有分支变化后，重新拉取每行 commit 信息
+        for row_data in self._mr_form_rows:
+            self._update_commit_info_for_row(row_data)
 
     def run_preview_mr_content(self):
         """弹出对话框，展示每个项目最终生成的 MR 标题/描述。"""
@@ -1189,15 +1371,24 @@ class AllProjectsTab(QWidget):
         assignee = self.mr_assignee_combo.currentText().strip()
         reviewer = self.mr_reviewer_combo.currentText().strip()
 
+        # 双重过滤：行复选框勾选 + 顶部「参与项目」勾选（防止 _mr_form_rows 缓存陈旧）
+        participating_paths = {w.path for w in self._selected_workspace_tabs()}
+        rows_data = [
+            r for r in self._mr_form_rows
+            if r[1].isChecked() and r[0].path in participating_paths
+        ]
+        if not rows_data:
+            QMessageBox.information(self, '提示', '请至少勾选一个项目行（左侧复选框）。')
+            return
+
         self.mr_preview_btn.setEnabled(False)
         QApplication.setOverrideCursor(Qt.WaitCursor)
-
-        rows_data = list(self._mr_form_rows)
 
         def _run():
             from quick_create_branch import run_command
             results = []
-            for ws, src, tgt, _status in rows_data:
+            for row_data in rows_data:
+                ws, _cb, src, tgt, _msg, _time, _status = row_data
                 source = src.currentText().strip()
                 target = tgt.currentText().strip()
                 if source in ('', '(待刷新)') or target in ('', '(待刷新)'):
@@ -1220,9 +1411,11 @@ class AllProjectsTab(QWidget):
                     title_tpl, source=source, target=target,
                     tab_name=ws.workspace_name or '', commit_message=commit_message,
                 ))
+                tg_number_from_title = _extract_tg_number_from_title(title)
                 desc = _safe_format(
                     desc_tpl, source=source, target=target,
                     tab_name=ws.workspace_name or '', commit_message=commit_message,
+                    tg_number_from_title=tg_number_from_title,
                 )
                 results.append({
                     'project': ws.workspace_name or ws.path,
@@ -1336,7 +1529,17 @@ class AllProjectsTab(QWidget):
         desc_tpl = self._desc_template
 
         tasks = []
-        for ws, src, tgt, status in self._mr_form_rows:
+        participating_paths = {w.path for w in self._selected_workspace_tabs()}
+        for row_data in self._mr_form_rows:
+            ws, cb, src, tgt, _msg, _time, status = row_data
+            if not cb.isChecked():
+                status.setText('跳过：未勾选')
+                status.setStyleSheet('color: #888;')
+                continue
+            if ws.path not in participating_paths:
+                status.setText('跳过：未参与')
+                status.setStyleSheet('color: #888;')
+                continue
             source = src.currentText().strip()
             target = tgt.currentText().strip()
             if source in ('', '(待刷新)') or target in ('', '(待刷新)'):
@@ -1346,7 +1549,7 @@ class AllProjectsTab(QWidget):
             tasks.append((ws, source, target, status))
 
         if not tasks:
-            QMessageBox.information(self, '提示', '所有项目都未选源/目标分支，无可执行任务。')
+            QMessageBox.information(self, '提示', '所有项目都未勾选或未选源/目标分支，无可执行任务。')
             return
 
         self.mr_create_btn.setEnabled(False)
@@ -1374,9 +1577,11 @@ class AllProjectsTab(QWidget):
                     title_tpl, source=source, target=target,
                     tab_name=ws.workspace_name or '', commit_message=commit_message,
                 )
+                tg_number_from_title = _extract_tg_number_from_title(title)
                 desc = _safe_format(
                     desc_tpl, source=source, target=target,
                     tab_name=ws.workspace_name or '', commit_message=commit_message,
+                    tg_number_from_title=tg_number_from_title,
                 )
                 try:
                     out = generate_mr(ws.path, url, token, assignee, reviewer, source, title, desc, target)
@@ -1395,7 +1600,8 @@ class AllProjectsTab(QWidget):
             self.mr_create_btn.setEnabled(True)
             for ws, source, target, msg, ok in outputs:
                 # 找到对应行更新状态
-                for _w, _s, _t, status in self._mr_form_rows:
+                for row_data in self._mr_form_rows:
+                    _w, _cb, _s, _t, _msg_lbl, _time_lbl, status = row_data
                     if _w is ws and _s.currentText().strip() == source and _t.currentText().strip() == target:
                         if ok:
                             status.setText('✅ 已创建')
