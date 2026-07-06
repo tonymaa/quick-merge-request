@@ -287,16 +287,33 @@ class AllProjectsTab(QWidget):
         for item in checked_items[:max_visible]:
             path = item.data(Qt.UserRole) or ''
             display = item.text().split('  —  ')[0].strip() if '  —  ' in item.text() else item.text()
-            chip = QPushButton(f' {display}  ✕ ')
+            # 容器：左侧名称（不可点）+ 右侧 ✕ 按钮（点击移除）
+            chip = QFrame()
             chip.setFixedHeight(22)
-            chip.setCursor(Qt.PointingHandCursor)
-            chip.setToolTip(f'点击移除: {path}')
+            chip.setCursor(Qt.ArrowCursor)
             chip.setStyleSheet(
-                'QPushButton { background: #e3f2fd; color: #1565c0; border: 1px solid #90caf9; '
-                'border-radius: 11px; padding: 0 8px; font-size: 12px; }'
-                'QPushButton:hover { background: #bbdefb; color: #0d47a1; }'
+                'QFrame { background: #e3f2fd; color: #1565c0; border: 1px solid #90caf9; '
+                'border-radius: 11px; }'
             )
-            chip.clicked.connect(lambda _checked=False, p=path: self._remove_project_via_chip(p))
+            chip_layout = QHBoxLayout(chip)
+            chip_layout.setContentsMargins(8, 0, 2, 0)
+            chip_layout.setSpacing(4)
+            name_label = QLabel(display)
+            name_label.setStyleSheet('QLabel { background: transparent; border: none; color: #1565c0; font-size: 12px; }')
+            name_label.setCursor(Qt.ArrowCursor)
+            name_label.setToolTip(path)
+            chip_layout.addWidget(name_label)
+            close_btn = QPushButton('✕')
+            close_btn.setFixedSize(16, 16)
+            close_btn.setCursor(Qt.PointingHandCursor)
+            close_btn.setToolTip(f'移除: {path}')
+            close_btn.setStyleSheet(
+                'QPushButton { background: transparent; border: none; color: #1565c0; '
+                'font-size: 12px; padding: 0; }'
+                'QPushButton:hover { color: #e74c3c; font-weight: bold; }'
+            )
+            close_btn.clicked.connect(lambda _checked=False, p=path: self._remove_project_via_chip(p))
+            chip_layout.addWidget(close_btn)
             self.project_chips_layout.addWidget(chip)
 
         more = len(checked_items) - max_visible
@@ -1202,8 +1219,13 @@ class AllProjectsTab(QWidget):
             self.mr_common_target_combo.blockSignals(False)
 
             self._applying_common_branches = True
-            for row_data, result in zip(rows, results):
+            # 用 path -> result 映射，按当前 _mr_form_rows 迭代，避免使用已被销毁的旧控件
+            result_by_path = {r[0].path: r for r in results}
+            for row_data in self._mr_form_rows:
                 ws, _cb, src, _t, _msg, _time, status = row_data
+                result = result_by_path.get(ws.path)
+                if result is None:
+                    continue
                 _ws2, branches, err = result
                 if err:
                     status.setText(f'失败: {err[:40]}')
@@ -1242,8 +1264,8 @@ class AllProjectsTab(QWidget):
             # 旧缓存已应用，清空避免下次误用
             self._mr_form_old_cache = {}
 
-            # 拉取每行的 commit 信息
-            for row_data in rows:
+            # 拉取每行的 commit 信息（仅当前还在表格里的行）
+            for row_data in self._mr_form_rows:
                 self._update_commit_info_for_row(row_data)
 
         run_blocking(_run, on_success=on_success, parent=self)
