@@ -8,6 +8,10 @@ from PyQt5.QtCore import QObject, pyqtSignal, QRunnable, QThreadPool
 T = TypeVar('T')
 
 
+# 活跃 worker 引用集合：防止 Python 端 GC 导致底层 QObject 被提前销毁
+_active_workers = set()
+
+
 class BlockingWorker(QRunnable):
     """
     阻塞函数工作器 - 在后台线程池中运行阻塞函数
@@ -60,6 +64,14 @@ def run_blocking(func: Callable[..., T],
                     parent=self)
     """
     worker = BlockingWorker(func, args)
+    # 持有 Python 引用，避免 worker 与 signals 在 run() 前被 GC
+    _active_workers.add(worker)
+
+    def _cleanup(*_):
+        _active_workers.discard(worker)
+
+    worker.signals.finished.connect(_cleanup)
+    worker.signals.error.connect(_cleanup)
 
     if on_success:
         worker.signals.finished.connect(on_success)
