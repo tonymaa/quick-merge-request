@@ -1533,16 +1533,16 @@ class AllProjectsTab(QWidget):
 
     def _auto_apply_common_branches(self):
         """共有分支变化时自动应用到所有项目行（手动选过的项目除外）。"""
-        source = self.mr_common_source_combo.currentText().strip()
+        source = (self.mr_common_source_combo.currentData() or '').strip()
         # 源分支带 __from__ 标记时，自动解析并设置共有目标分支
         parsed_target = parse_target_branch_from_source(source) if source else None
         if parsed_target:
-            idx = self.mr_common_target_combo.findText(parsed_target)
+            idx = self.mr_common_target_combo.findData(parsed_target)
             if idx >= 0 and self.mr_common_target_combo.currentIndex() != idx:
                 self.mr_common_target_combo.blockSignals(True)
                 self.mr_common_target_combo.setCurrentIndex(idx)
                 self.mr_common_target_combo.blockSignals(False)
-        target = self.mr_common_target_combo.currentText().strip()
+        target = (self.mr_common_target_combo.currentData() or '').strip()
         if not source and not target:
             return
         self._applying_common_branches = True
