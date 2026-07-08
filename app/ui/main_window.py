@@ -4,16 +4,18 @@ import glob
 import copy
 import subprocess
 import xml.etree.ElementTree as ET
-from PyQt5.QtCore import Qt, QTimer, QEvent
+from PyQt5.QtCore import Qt, QTimer, QEvent, QStringListModel
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QPushButton, QFileDialog,
-    QLabel, QInputDialog, QMessageBox, QMenu, QComboBox, QFrame
+    QLabel, QInputDialog, QLineEdit, QCompleter,
+    QMessageBox, QMenu, QComboBox, QFrame
 )
 from PyQt5.QtWidgets import QToolTip
 from PyQt5.QtGui import QIcon, QPainter, QColor
 from PyQt5.QtWidgets import QSystemTrayIcon
 from app.styles import apply_global_styles
+from app.async_utils import run_blocking
 from app.ui.workspace_tab import WorkspaceTab
 from app.ui.all_projects_tab import AllProjectsTab
 from app.ui.commit_notification_dialog import CommitNotificationDialog
@@ -238,6 +240,29 @@ class App(QWidget):
         workspace_buttons_layout.addWidget(self.notification_button)
         workspace_buttons_layout.addStretch()
 
+        # 工作目录搜索框：输入名称/路径片段跳转到对应 tab
+        self.workspace_search = QLineEdit()
+        self.workspace_search.setPlaceholderText('搜索工作目录...')
+        self.workspace_search.setMaximumWidth(240)
+        self.workspace_search.setMinimumWidth(140)
+        self.workspace_search.setToolTip('输入工作区名称或路径片段，回车或选中下拉项即跳转')
+        self.workspace_search.setClearButtonEnabled(True)
+        self._workspace_search_model = QStringListModel(self)
+        self._workspace_search_completer = QCompleter(self._workspace_search_model, self)
+        self._workspace_search_completer.setCaseSensitivity(Qt.CaseInsensitive)
+        try:
+            self._workspace_search_completer.setFilterMode(Qt.MatchContains)
+        except AttributeError:
+            pass
+        self._workspace_search_completer.setPopup(self._workspace_search_completer.popup())
+        self.workspace_search.setCompleter(self._workspace_search_completer)
+        workspace_buttons_layout.addWidget(self.workspace_search)
+        # 缓存：displayText -> (tab_index, ws_path, ws_name)；用于激活时回查
+        self._workspace_search_entries = []
+        self._workspace_search_completer.activated.connect(self._on_workspace_search_activated)
+        self.workspace_search.returnPressed.connect(self._on_workspace_search_return)
+        self.workspace_search.textEdited.connect(self._on_workspace_search_text_edited)
+
         # 竖直分隔线：把工作区/通知 与 配置管理 视觉分组
         toolbar_sep = QFrame()
         toolbar_sep.setFrameShape(QFrame.VLine)
@@ -412,6 +437,12 @@ class App(QWidget):
         if isinstance(w, WorkspaceTab):
             w.reload_new_branch_history()
             w.ensure_initialized()
+            # 立即用缓存的分支显示，再异步刷新当前分支
+            self._update_window_title(w, getattr(w, '_cached_branch', None))
+            self._refresh_current_branch_async(w)
+        elif isinstance(w, AllProjectsTab):
+            # 切到「批量操作」恢复默认标题
+            self.setWindowTitle(self.title)
         # 只要切到任何可见 tab（WorkspaceTab 或 AllProjectsTab）就移除隐藏的欢迎页。
         # 注意：initUI 中 addTab(AllProjectsTab) 会同步触发本回调，此时 welcome_tab
         # 可能尚未创建，需要 hasattr 兜底。
@@ -420,6 +451,46 @@ class App(QWidget):
                 if self.workspace_tabs.widget(i) is self.welcome_tab:
                     self.workspace_tabs.removeTab(i)
                     break
+
+    def _update_window_title(self, tab, branch):
+        """根据当前工作区 tab 更新窗口标题：标题 — 📂 路径  🌿 分支"""
+        if not isinstance(tab, WorkspaceTab):
+            self.setWindowTitle(self.title)
+            return
+        path = (tab.path or '').strip() or '(无路径)'
+        branch_text = (branch or '').strip() or '(无分支)'
+        self.setWindowTitle(f'{self.title}  —  📂 {path}  🌿 {branch_text}')
+
+    def _refresh_current_branch_async(self, tab):
+        """异步获取 tab 对应仓库的当前分支，完成后若仍在当前 tab 则更新标题。"""
+        path = getattr(tab, 'path', None)
+        if not path:
+            return
+
+        def _fetch():
+            import subprocess
+            try:
+                r = subprocess.run(
+                    ['git', 'branch', '--show-current'],
+                    cwd=path, capture_output=True, text=True,
+                    encoding='utf-8', errors='replace'
+                )
+                if r.returncode == 0:
+                    return r.stdout.strip() or ''
+                return None
+            except Exception:
+                return None
+
+        def _on_done(branch):
+            if not branch:
+                return
+            # 缓存，下次切换可立即显示
+            tab._cached_branch = branch
+            # 仍然在当前 tab 才更新标题
+            if self.workspace_tabs.currentWidget() is tab:
+                self._update_window_title(tab, branch)
+
+        run_blocking(_fetch, on_success=_on_done, parent=self)
 
     def show_workspace_context_menu(self, position):
         tab_index = self.workspace_tabs.tabBar().tabAt(position)
@@ -545,6 +616,65 @@ class App(QWidget):
             bar.setTabButton(idx, QTabBar.RightSide, None)
         except Exception:
             pass
+
+    # ──────────────────────── 工作目录搜索框 ────────────────────────
+
+    def _refresh_workspace_search_entries(self):
+        """重建搜索框的候选项列表（每次聚焦/编辑时调用，确保最新）。"""
+        entries = []
+        display_texts = []
+        for i in range(self.workspace_tabs.count()):
+            w = self.workspace_tabs.widget(i)
+            if not isinstance(w, WorkspaceTab):
+                continue
+            name = (w.workspace_name or '').strip()
+            path = (w.path or '').strip()
+            if not name and not path:
+                continue
+            display = f'{name}  —  {path}' if path else name
+            entries.append((display, w))
+            display_texts.append(display)
+        self._workspace_search_entries = entries
+        self._workspace_search_model.setStringList(display_texts)
+
+    def _on_workspace_search_text_edited(self, _text):
+        """用户开始输入时刷新候选项，保证与最新 tab 状态一致。"""
+        self._refresh_workspace_search_entries()
+
+    def _jump_to_workspace(self, tab_widget):
+        """跳转到指定工作目录 tab，清空搜索框。"""
+        if tab_widget is None:
+            return
+        self.workspace_tabs.setCurrentWidget(tab_widget)
+        self.workspace_search.clear()
+        try:
+            tab_widget.setFocus()
+        except Exception:
+            pass
+
+    def _on_workspace_search_activated(self, text):
+        """补全项被选中：根据 displayText 找到对应 tab 跳转。"""
+        for display, w in self._workspace_search_entries:
+            if display == text:
+                self._jump_to_workspace(w)
+                return
+
+    def _on_workspace_search_return(self):
+        """回车：选第一个匹配项（优先 name 前缀匹配，否则包含匹配）。"""
+        text = self.workspace_search.text().strip()
+        if not text:
+            return
+        self._refresh_workspace_search_entries()
+        lower = text.lower()
+        matches = [(d, w) for d, w in self._workspace_search_entries if lower in d.lower()]
+        if not matches:
+            return
+        target = matches[0]
+        for d, w in matches:
+            if d.lower().startswith(lower):
+                target = (d, w)
+                break
+        self._jump_to_workspace(target[1])
 
     def create_tray_icon(self):
         """创建托盘图标"""
