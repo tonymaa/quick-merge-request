@@ -855,11 +855,13 @@ class AllProjectsTab(QWidget):
         # 共有分支选择器 + 刷新按钮（放在标题模板上方）
         common_branches_layout = QHBoxLayout()
         common_branches_layout.setSpacing(12)
-        # 切换"共有分支(交集)/所有分支(并集)"
+        # 切换"共有分支(交集)/所有分支(并集)"，默认勾选（显示并集）
         self.mr_show_all_branches_cb = QCheckBox('显示所有分支')
         self.mr_show_all_branches_cb.setToolTip(
             '勾选：下拉框显示所有项目的分支并集；不勾选：只显示所有项目共有的分支（交集）。'
         )
+        # 先设默认状态，再连信号，避免初始化时无谓触发
+        self.mr_show_all_branches_cb.setChecked(True)
         self.mr_show_all_branches_cb.toggled.connect(self._on_show_all_branches_toggled)
         self.mr_common_source_combo = NoWheelComboBox()
         self.mr_common_source_combo.setEditable(True)
@@ -876,15 +878,19 @@ class AllProjectsTab(QWidget):
         self.mr_common_target_combo.currentIndexChanged.connect(self._auto_apply_common_branches)
         # 刷新所有项目分支按钮（移到这里，与单 MR 侧风格一致）
         self.mr_refresh_branches_btn = QPushButton('刷新所有项目分支')
-        self.mr_branches_label = QLabel('共有分支:')
+        # 默认勾选"显示所有分支" -> 初始 label 即为"所有分支:"
+        self.mr_branches_label = QLabel('所有分支:')
+        self.mr_branches_label.setMinimumWidth(72)
+        src_label = QLabel('源:')
+        tgt_label = QLabel('目标:')
+        # 布局：checkbox + 固定 label + [源: 拉伸] + [目标: 拉伸] + 刷新按钮
         common_branches_layout.addWidget(self.mr_show_all_branches_cb)
         common_branches_layout.addWidget(self.mr_branches_label)
-        common_branches_layout.addWidget(QLabel('源:'))
-        common_branches_layout.addWidget(self.mr_common_source_combo)
-        common_branches_layout.addWidget(QLabel('目标:'))
-        common_branches_layout.addWidget(self.mr_common_target_combo)
+        common_branches_layout.addWidget(src_label)
+        common_branches_layout.addWidget(self.mr_common_source_combo, stretch=1)
+        common_branches_layout.addWidget(tgt_label)
+        common_branches_layout.addWidget(self.mr_common_target_combo, stretch=1)
         common_branches_layout.addWidget(self.mr_refresh_branches_btn)
-        common_branches_layout.addStretch()
         layout.addLayout(common_branches_layout)
 
         # 标题/描述模板（移到共有分支下方）
