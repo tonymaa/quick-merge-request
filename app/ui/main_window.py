@@ -263,6 +263,12 @@ class App(QWidget):
         self.workspace_search.returnPressed.connect(self._on_workspace_search_return)
         self.workspace_search.textEdited.connect(self._on_workspace_search_text_edited)
 
+        # Ctrl+F 快捷键：聚焦搜索框
+        from PyQt5.QtGui import QKeySequence
+        from PyQt5.QtWidgets import QShortcut
+        self.workspace_search_focus_sc = QShortcut(QKeySequence('Ctrl+F'), self)
+        self.workspace_search_focus_sc.activated.connect(self._focus_workspace_search)
+
         # 竖直分隔线：把工作区/通知 与 配置管理 视觉分组
         toolbar_sep = QFrame()
         toolbar_sep.setFrameShape(QFrame.VLine)
@@ -618,6 +624,13 @@ class App(QWidget):
             pass
 
     # ──────────────────────── 工作目录搜索框 ────────────────────────
+
+    def _focus_workspace_search(self):
+        """Ctrl+F：聚焦搜索框并全选当前文本，便于重新输入。"""
+        self.workspace_search.setFocus()
+        self.workspace_search.selectAll()
+        # 聚焦即刷新候选列表，保证最新
+        self._refresh_workspace_search_entries()
 
     def _refresh_workspace_search_entries(self):
         """重建搜索框的候选项列表（每次聚焦/编辑时调用，确保最新）。"""
