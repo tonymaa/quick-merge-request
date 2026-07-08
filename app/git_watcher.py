@@ -308,23 +308,18 @@ class GitWatcher:
             print(f"[{timestamp}] [Notification] 线程检查 - current: {current_thread_id}, main: {main_thread_id}")
 
             if current_thread_id != main_thread_id:
-                # 不在主线程，使用信号/槽机制切换到主线程执行
+                # 不在主线程，通过 QTimer.singleShot 切换到主线程执行
                 print(f"[{timestamp}] [Notification] 不在主线程，尝试切换到主线程...")
 
-                # 使用主窗口的信号机制来切换线程
-                # 在主窗口对象上创建一个临时方法，通过 invokeMethod 调用
                 if self.main_window:
-                    from PyQt5.QtCore import QMetaObject, Qt
+                    from PyQt5.QtCore import QTimer
 
                     # 保存 commit 到实例变量，避免参数传递问题
                     self._pending_notification_commit = commit
 
-                    # 使用 invokeMethod 在主窗口的线程（主线程）中执行方法
-                    QMetaObject.invokeMethod(
-                        self.main_window,
-                        "show_notification_from_watcher",
-                        Qt.QueuedConnection
-                    )
+                    # QTimer.singleShot(0, callable) 把 callable 投递到
+                    # main_window 所在线程（主线程）的事件队列执行，无需 pyqtSlot
+                    QTimer.singleShot(0, self.main_window.show_notification_from_watcher)
                     return
                 else:
                     print(f"[{timestamp}] [Notification] 错误: main_window 为 None，无法切换到主线程！")
