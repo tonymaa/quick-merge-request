@@ -148,7 +148,7 @@ class AllProjectsTab(QWidget):
             }
             QListWidget::item { padding: 12px 14px; border-bottom: 1px solid #eef0f2; }
             QListWidget::item:selected { background: #1677ff; color: white; }
-            QListWidget::item:hover { background: #e6f0ff; }
+            QListWidget::item:hover:!selected { background: #e6f0ff; }
         ''')
         for label in ('创建分支', '创建 MR', '分支管理', 'MR 列表'):
             self.nav_list.addItem(QListWidgetItem(label))
@@ -2232,9 +2232,12 @@ class AllProjectsTab(QWidget):
         top.addStretch()
 
         self.mr_list_refresh_btn = QPushButton('刷新')
+        self.mr_list_refresh_btn.setCursor(Qt.PointingHandCursor)
         self.mr_list_refresh_btn.setStyleSheet(
-            'QPushButton { background: #f5f5f5; border: 1px solid #ddd; border-radius: 4px; padding: 6px 14px; }'
-            'QPushButton:hover { background: #e8e8e8; }'
+            'QPushButton { background: white; border: 1px solid #d0d0d0; border-radius: 4px; '
+            'padding: 6px 14px; color: #444; }'
+            'QPushButton:hover { background: #f0f7ff; border-color: #1677ff; color: #1677ff; }'
+            'QPushButton:disabled { background: #f5f5f5; color: #aaa; border-color: #ddd; }'
         )
         top.addWidget(self.mr_list_refresh_btn)
         layout.addLayout(top)
