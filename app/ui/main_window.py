@@ -300,11 +300,39 @@ class App(QWidget):
         self.workspace_tabs.tabCloseRequested.connect(self.remove_workspace_tab)
         self.workspace_tabs.currentChanged.connect(self.on_workspace_tab_changed)
 
-        # 固定的「批量操作」tab，插入到最左侧（index 0）
+        # 固定的「批量操作」tab：作为 tabBar 左上角 corner widget 永久置顶，
+        # 不随 tab 滚动消失。tab 本身隐藏（widget 仍由 QTabWidget 持有）。
         self.all_projects_tab = AllProjectsTab(self, self.config, self.config_file)
         self.workspace_tabs.addTab(self.all_projects_tab, '批量操作')
-        # 隐藏该固定 tab 的关闭按钮，防止误删（延后到窗口显示后执行，避免在构造期触发底层绘制问题）
-        QTimer.singleShot(0, lambda: self._hide_close_button_for_tab(self.all_projects_tab))
+        _all_idx = self.workspace_tabs.indexOf(self.all_projects_tab)
+        if _all_idx >= 0:
+            self.workspace_tabs.tabBar().setTabVisible(_all_idx, False)
+            # 清空 tab 文本与关闭按钮，避免隐藏 tab 在某些样式下残留渲染
+            self.workspace_tabs.setTabText(_all_idx, '')
+            self._hide_close_button_for_tab(self.all_projects_tab)
+        # 右上角显式置空，避免遗留旧 corner widget
+        self.workspace_tabs.setCornerWidget(None, Qt.TopRightCorner)
+        self.all_projects_corner_btn = QPushButton('⚙ 批量操作')
+        self.all_projects_corner_btn.setCursor(Qt.PointingHandCursor)
+        self.all_projects_corner_btn.setToolTip('切回「批量操作」（固定在左侧，不随 tab 滚动）')
+        self.all_projects_corner_btn.setCheckable(True)
+        self.all_projects_corner_btn.setChecked(True)
+        self.all_projects_corner_btn.setStyleSheet(
+            'QPushButton {'
+            ' background: transparent; color: #595959; border: none;'
+            ' border-bottom: 2px solid transparent;'
+            ' padding: 8px 12px 6px 12px; font-weight: 500;'
+            '}'
+            'QPushButton:hover { color: #1677ff; background: rgba(22,119,255,0.05); }'
+            'QPushButton:checked {'
+            ' color: #1677ff; font-weight: 600;'
+            ' border-bottom: 2px solid #1677ff;'
+            '}'
+        )
+        self.all_projects_corner_btn.clicked.connect(
+            lambda: self.workspace_tabs.setCurrentWidget(self.all_projects_tab)
+        )
+        self.workspace_tabs.setCornerWidget(self.all_projects_corner_btn, Qt.TopLeftCorner)
 
         self.welcome_tab = QWidget()
         welcome_layout = QVBoxLayout()
@@ -449,6 +477,9 @@ class App(QWidget):
         elif isinstance(w, AllProjectsTab):
             # 切到「批量操作」恢复默认标题
             self.setWindowTitle(self.title)
+        # 同步右上角「批量操作」按钮的选中态：切到批量操作页则高亮，否则取消高亮
+        if hasattr(self, 'all_projects_corner_btn'):
+            self.all_projects_corner_btn.setChecked(isinstance(w, AllProjectsTab))
         # 只要切到任何可见 tab（WorkspaceTab 或 AllProjectsTab）就移除隐藏的欢迎页。
         # 注意：initUI 中 addTab(AllProjectsTab) 会同步触发本回调，此时 welcome_tab
         # 可能尚未创建，需要 hasattr 兜底。
