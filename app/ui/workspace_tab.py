@@ -1281,7 +1281,6 @@ class WorkspaceTab(QWidget):
 
         # 首次刷新时懒加载用户下拉
         self._ensure_mr_list_users_loaded()
-        self._ensure_current_username_loaded()
 
         state = self._current_mr_state_filter()
 
@@ -1289,8 +1288,8 @@ class WorkspaceTab(QWidget):
             text = combo.currentText().strip()
             return None if (not text or text == '(全部)') else text
 
-        # 创建人固定为当前用户（"自己"）
-        author = self._current_username
+        # 创建人固定为当前用户（"自己"），username 在后台线程内同步获取避免竞态
+        cached_username = self._current_username
         assignee = _filter_value(self.mr_list_assignee_combo)
         reviewer = _filter_value(self.mr_list_reviewer_combo)
 
@@ -1303,17 +1302,25 @@ class WorkspaceTab(QWidget):
         QApplication.processEvents()
 
         def _fetch():
+            author = cached_username
+            if not author:
+                username, user_err = get_current_gitlab_username(url, token)
+                if not user_err and username:
+                    author = username
             return get_merge_requests(
                 self.path, url, token,
                 state=state, author=author, assignee=assignee, reviewer=reviewer
-            )
+            ), author
 
         def on_success(result):
             # 已有更新的请求发出，丢弃这次过期响应，避免旧数据覆盖
             if seq != self._mr_list_refresh_seq:
                 return
             self.mr_list_refresh_btn.setEnabled(True)
-            mr_list, error = result
+            (mr_list, error), author = result
+            # 缓存 username，后续刷新直接复用
+            if author and not self._current_username:
+                self._current_username = author
             if error:
                 self.mr_list_status_label.setText(error)
                 self.mr_list_table.setRowCount(0)

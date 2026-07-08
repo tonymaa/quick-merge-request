@@ -17,9 +17,9 @@ from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
     QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QMessageBox, QPushButton, QStackedWidget,
-    QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
-    QFormLayout
+    QListWidgetItem, QMessageBox, QPushButton, QScrollArea,
+    QStackedWidget, QTableWidget, QTableWidgetItem, QTextEdit,
+    QVBoxLayout, QWidget, QFormLayout
 )
 
 from app.async_utils import run_blocking
@@ -2142,60 +2142,328 @@ class AllProjectsTab(QWidget):
                 cb.setChecked(not cb.isChecked())
 
     def run_bm_delete(self):
+        """批量删除选中的分支，带实时进度的对话框（跨多项目）。"""
         selected_idxs = [idx for cb, idx in self._branch_mgmt_checkboxes if cb.isChecked()]
         if not selected_idxs:
             QMessageBox.information(self, '提示', '请先勾选要删除的分支。')
             return
-        mode = self._branch_mgmt_mode
+
+        is_remote = self._branch_mgmt_mode == 'remote'
+        branch_type = '远程' if is_remote else '本地'
         rows = [self._branch_mgmt_all_data[i] for i in selected_idxs]
-        # 二次确认
-        names_preview = '\n'.join(f"- [{r['project']}] {r['branch']} ({mode})" for r in rows[:20])
-        more = '' if len(rows) <= 20 else f'\n... 共 {len(rows)} 个'
-        reply = QMessageBox.question(
-            self, '确认批量删除',
-            f'即将删除 {len(rows)} 个{mode}分支：\n\n{names_preview}{more}\n\n'
-            f'本地分支用 git branch -D 强删；远程分支用 git push origin --delete。'
-            f'操作不可撤销，是否继续？',
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+
+        # ── 构建对话框 ──
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f'批量删除{branch_type}分支')
+        dialog.setMinimumWidth(650)
+        dialog.setMinimumHeight(300)
+        dialog.setMaximumHeight(650)
+        dialog._deleting = False
+
+        def close_event(event):
+            if dialog._deleting:
+                event.ignore()
+            else:
+                event.accept()
+
+        dialog.closeEvent = close_event
+
+        dlg_layout = QVBoxLayout(dialog)
+        dlg_layout.setSpacing(10)
+
+        title_label = QLabel(f'确认删除以下 {len(rows)} 个{branch_type}分支？')
+        title_label.setWordWrap(True)
+        title_label.setStyleSheet('font-weight: bold; font-size: 13px;')
+        dlg_layout.addWidget(title_label)
+
+        progress_label = QLabel('')
+        progress_label.setStyleSheet('color: #7f8c8d; font-size: 12px;')
+        progress_label.setVisible(False)
+        dlg_layout.addWidget(progress_label)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet('QScrollArea { border: 1px solid #ddd; border-radius: 4px; }')
+
+        list_widget = QWidget()
+        list_layout = QVBoxLayout(list_widget)
+        list_layout.setContentsMargins(8, 8, 8, 8)
+        list_layout.setSpacing(3)
+
+        row_widgets = []
+        for r in rows:
+            row = QHBoxLayout()
+            row.setSpacing(6)
+
+            status_label = QLabel('  ')
+            status_label.setFixedWidth(20)
+            status_label.setAlignment(Qt.AlignCenter)
+
+            proj_label = QLabel(r['project'])
+            proj_label.setStyleSheet('color: #1677ff; font-size: 11px;')
+            proj_label.setMinimumWidth(120)
+            proj_label.setMaximumWidth(180)
+
+            name_label = QLabel(r['branch'])
+            name_label.setStyleSheet('font-weight: bold; font-size: 12px;')
+            name_label.setMinimumWidth(160)
+
+            subject = r.get('subject', '')
+            subject_display = subject[:30] + '...' if len(subject) > 30 else subject
+            date_str = r.get('date', '')[:10]
+            info_label = QLabel(f'{subject_display}  ({date_str})')
+            info_label.setStyleSheet('color: #7f8c8d; font-size: 11px;')
+
+            row.addWidget(status_label)
+            row.addWidget(proj_label)
+            row.addWidget(name_label)
+            row.addWidget(info_label)
+            row.addStretch()
+            list_layout.addLayout(row)
+            row_widgets.append((status_label, proj_label, name_label, r))
+
+        list_layout.addStretch()
+        scroll.setWidget(list_widget)
+        dlg_layout.addWidget(scroll)
+
+        # ── 按钮栏 ──
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+
+        confirm_buttons = []
+        if is_remote:
+            confirm_btn = QPushButton(f'确认删除 ({len(rows)} 个)')
+            confirm_btn.setStyleSheet(
+                'QPushButton { background: #e74c3c; color: white; border: none;'
+                ' border-radius: 4px; padding: 8px 16px; font-weight: bold; }'
+                'QPushButton:hover { background: #c0392b; }'
+            )
+            confirm_buttons.append(('force', confirm_btn))
+        else:
+            safe_btn = QPushButton(f'安全删除 ({len(rows)} 个)')
+            safe_btn.setStyleSheet(
+                'QPushButton { background: #f39c12; color: white; border: none;'
+                ' border-radius: 4px; padding: 8px 16px; font-weight: bold; }'
+                'QPushButton:hover { background: #e67e22; }'
+            )
+            force_btn = QPushButton(f'强制删除 ({len(rows)} 个)')
+            force_btn.setStyleSheet(
+                'QPushButton { background: #e74c3c; color: white; border: none;'
+                ' border-radius: 4px; padding: 8px 16px; font-weight: bold; }'
+                'QPushButton:hover { background: #c0392b; }'
+            )
+            confirm_buttons.append(('safe', safe_btn))
+            confirm_buttons.append(('force', force_btn))
+
+        cancel_confirm_btn = QPushButton('取消')
+        cancel_confirm_btn.setStyleSheet(
+            'QPushButton { background: #f5f5f5; border: 1px solid #ddd;'
+            ' border-radius: 4px; padding: 8px 16px; color: #555; }'
+            'QPushButton:hover { background: #e8e8e8; }'
         )
-        if reply != QMessageBox.Yes:
-            return
 
-        self.bm_delete_btn.setEnabled(False)
-        self.bm_status.setText(f'正在删除 {len(rows)} 个分支...')
+        for _, btn in confirm_buttons:
+            btn_layout.addWidget(btn)
+        btn_layout.addWidget(cancel_confirm_btn)
 
-        def _run():
-            failed = []
-            success = 0
-            for r in rows:
-                ws = r['ws']
+        cancel_delete_btn = QPushButton('取消删除')
+        cancel_delete_btn.setStyleSheet(
+            'QPushButton { background: #7f8c8d; color: white; border: none;'
+            ' border-radius: 4px; padding: 8px 16px; font-weight: bold; }'
+            'QPushButton:hover { background: #636e72; }'
+        )
+        cancel_delete_btn.setVisible(False)
+
+        close_btn = QPushButton('关闭')
+        close_btn.setStyleSheet(
+            'QPushButton { background: #f5f5f5; border: 1px solid #ddd;'
+            ' border-radius: 4px; padding: 8px 16px; color: #555; }'
+            'QPushButton:hover { background: #e8e8e8; }'
+        )
+        close_btn.setVisible(False)
+
+        btn_layout.addWidget(cancel_delete_btn)
+        btn_layout.addWidget(close_btn)
+        dlg_layout.addLayout(btn_layout)
+
+        # ── 交互逻辑 ──
+        delete_mode = {'action': 'cancel'}
+        cancel_flag = [False]
+
+        def start_delete(action):
+            delete_mode['action'] = action
+            for _, btn in confirm_buttons:
+                btn.setVisible(False)
+            cancel_confirm_btn.setVisible(False)
+            cancel_delete_btn.setVisible(True)
+            cancel_delete_btn.setEnabled(True)
+            cancel_delete_btn.setText('取消删除')
+            title_label.setText(f'正在批量删除{branch_type}分支...')
+            title_label.setStyleSheet('font-weight: bold; font-size: 13px; color: #f39c12;')
+            progress_label.setVisible(True)
+            dialog._deleting = True
+            self.bm_delete_btn.setEnabled(False)
+            self.bm_status.setText(f'正在删除 {len(rows)} 个分支...')
+
+            flag = '-D' if action == 'force' else '-d'
+            total = len(row_widgets)
+            counters = {'deleted': 0, 'failed': 0, 'index': 0}
+            failed_list = []
+
+            def delete_next():
+                i = counters['index']
+                if i >= total or cancel_flag[0]:
+                    finish_delete()
+                    return
+
+                status_lbl, _proj_lbl, name_lbl, r = row_widgets[i]
                 name = r['branch']
-                try:
-                    if mode == 'local':
-                        from quick_create_branch import run_command
-                        ok, _out, err = run_command(['git', 'branch', '-D', name], ws.path)
-                        if not ok:
-                            failed.append({'project': r['project'], 'error': f'删除 {name} 失败: {err}'})
-                            continue
+                directory = r['ws'].path
+
+                progress_label.setText(
+                    f'正在处理 {i + 1}/{total}: [{r["project"]}] {name}'
+                )
+                name_lbl.setStyleSheet(
+                    'font-weight: bold; font-size: 12px; color: #f39c12;'
+                )
+
+                if is_remote:
+                    cmd = ['git', 'push', 'origin', '--delete', name]
+                else:
+                    cmd = ['git', 'branch', flag, name]
+
+                def _run_delete():
+                    import subprocess
+                    try:
+                        result_del = subprocess.run(
+                            cmd, cwd=directory, capture_output=True, text=True,
+                            encoding='utf-8', errors='replace'
+                        )
+                        if result_del.returncode == 0:
+                            return True, None
+                        return False, result_del.stderr.strip()[:200]
+                    except Exception as e:
+                        return False, str(e)[:200]
+
+                def on_branch_done(result):
+                    success, error = result
+                    if success:
+                        status_lbl.setText('✓')
+                        status_lbl.setStyleSheet(
+                            'color: #27ae60; font-size: 14px; font-weight: bold;'
+                        )
+                        name_lbl.setStyleSheet(
+                            'font-weight: bold; font-size: 12px; color: #27ae60;'
+                            ' text-decoration: line-through;'
+                        )
+                        counters['deleted'] += 1
                     else:
-                        from quick_create_branch import run_command
-                        ok, _out, err = run_command(['git', 'push', 'origin', '--delete', name], ws.path)
-                        if not ok:
-                            failed.append({'project': r['project'], 'error': f'删除远程 {name} 失败: {err}'})
-                            continue
-                    success += 1
-                except Exception as e:
-                    failed.append({'project': r['project'], 'error': f'删除 {name} 异常: {e}'})
-            return success, failed
+                        status_lbl.setText('✗')
+                        status_lbl.setStyleSheet(
+                            'color: #e74c3c; font-size: 14px; font-weight: bold;'
+                        )
+                        name_lbl.setStyleSheet(
+                            'font-weight: bold; font-size: 12px; color: #e74c3c;'
+                        )
+                        if error:
+                            name_lbl.setToolTip(error)
+                        failed_list.append({
+                            'project': r['project'],
+                            'error': f"删除 {name} 失败: {error or '未知错误'}"
+                        })
+                        counters['failed'] += 1
 
-        def on_success(result):
-            success, failed = result
-            self.bm_delete_btn.setEnabled(True)
-            self.bm_status.setText(f'成功删除 {success} 个分支。')
-            self._report_failures(failed, '批量删除分支')
-            self.run_bm_refresh()
+                    counters['index'] += 1
+                    delete_next()
 
-        run_blocking(_run, on_success=on_success, parent=self)
+                def on_branch_error(err):
+                    status_lbl.setText('✗')
+                    status_lbl.setStyleSheet(
+                        'color: #e74c3c; font-size: 14px; font-weight: bold;'
+                    )
+                    name_lbl.setStyleSheet(
+                        'font-weight: bold; font-size: 12px; color: #e74c3c;'
+                    )
+                    name_lbl.setToolTip(str(err)[:200])
+                    failed_list.append({
+                        'project': r['project'],
+                        'error': f'删除 {name} 异常: {err}'
+                    })
+                    counters['failed'] += 1
+                    counters['index'] += 1
+                    delete_next()
+
+                run_blocking(
+                    _run_delete, on_success=on_branch_done,
+                    on_error=on_branch_error, parent=self
+                )
+
+            def finish_delete():
+                for j in range(counters['index'], total):
+                    s, _p, _n, _r = row_widgets[j]
+                    s.setText('–')
+                    s.setStyleSheet('color: #7f8c8d; font-size: 14px;')
+
+                dialog._deleting = False
+                cancel_delete_btn.setVisible(False)
+
+                deleted_count = counters['deleted']
+                failed_count = counters['failed']
+                skipped = total - deleted_count - failed_count
+
+                summary_parts = []
+                if deleted_count:
+                    summary_parts.append(f'✓ 成功 {deleted_count}')
+                if failed_count:
+                    summary_parts.append(f'✗ 失败 {failed_count}')
+                if skipped:
+                    summary_parts.append(f'– 跳过 {skipped}')
+                summary_text = '  '.join(summary_parts)
+
+                if failed_count or skipped:
+                    title_label.setText(f'删除完成 — {summary_text}')
+                    title_label.setStyleSheet(
+                        'font-weight: bold; font-size: 13px; color: #e74c3c;'
+                    )
+                else:
+                    title_label.setText(
+                        f'删除完成 — 全部成功 ({deleted_count} 个)'
+                    )
+                    title_label.setStyleSheet(
+                        'font-weight: bold; font-size: 13px; color: #27ae60;'
+                    )
+
+                progress_label.setText('')
+                close_btn.setVisible(True)
+
+                self.bm_delete_btn.setEnabled(True)
+                self.bm_status.setText(
+                    f'删除完成：成功 {deleted_count} / 失败 {failed_count}'
+                    + (f' / 跳过 {skipped}' if skipped else '')
+                )
+                self._report_failures(failed_list, '批量删除分支')
+                self.run_bm_refresh()
+
+            delete_next()
+
+        def on_cancel_confirm():
+            dialog.reject()
+
+        def on_cancel_delete():
+            cancel_delete_btn.setEnabled(False)
+            cancel_delete_btn.setText('正在取消...')
+            cancel_flag[0] = True
+
+        def on_close():
+            dialog.accept()
+
+        for action, btn in confirm_buttons:
+            btn.clicked.connect(lambda checked=False, a=action: start_delete(a))
+        cancel_confirm_btn.clicked.connect(on_cancel_confirm)
+        cancel_delete_btn.clicked.connect(on_cancel_delete)
+        close_btn.clicked.connect(on_close)
+
+        dialog.exec_()
 
     # ──────────────────────── 批量合并请求列表 ──────────────────────
     def init_mr_list_tab(self):
@@ -2354,7 +2622,6 @@ class AllProjectsTab(QWidget):
 
         self._ensure_mr_list_users_loaded()
         self._refresh_mr_list_project_combo()
-        self._ensure_current_username_loaded()
 
         state = self._current_mr_state()
 
@@ -2362,8 +2629,8 @@ class AllProjectsTab(QWidget):
             text = combo.currentText().strip()
             return None if (not text or text == '(全部)') else text
 
-        # 创建人固定为当前用户（"自己"）
-        author = self._current_username
+        # 创建人固定为当前用户（"自己"），username 在后台线程内同步获取避免竞态
+        cached_username = self._current_username
         assignee = _filter_value(self.mr_list_assignee_combo)
         reviewer = _filter_value(self.mr_list_reviewer_combo)
 
@@ -2374,6 +2641,12 @@ class AllProjectsTab(QWidget):
         self.mr_list_refresh_btn.setEnabled(False)
 
         def _run():
+            # 后台线程同步获取当前用户名（首次），避免主线程异步竞态
+            author = cached_username
+            if not author:
+                username, user_err = get_current_gitlab_username(url, token)
+                if not user_err and username:
+                    author = username
             all_mrs = []  # list[(ws, mr_dict)]
             failed = []
             for ws in selected:
@@ -2389,13 +2662,16 @@ class AllProjectsTab(QWidget):
                         all_mrs.append((ws, mr))
                 except Exception as e:
                     failed.append({'project': ws.workspace_name, 'error': str(e)})
-            return all_mrs, failed
+            return all_mrs, failed, author
 
         def on_success(result):
             if seq != self._mr_list_refresh_seq:
                 return
             self.mr_list_refresh_btn.setEnabled(True)
-            all_mrs, failed = result
+            all_mrs, failed, author = result
+            # 缓存 username，后续刷新直接复用
+            if author and not self._current_username:
+                self._current_username = author
             self._populate_mr_list_table(all_mrs)
             total = len(all_mrs)
             if total:
