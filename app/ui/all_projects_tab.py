@@ -456,9 +456,11 @@ class AllProjectsTab(QWidget):
         except Exception:
             pass
 
-    def reload_config(self, new_config):
+    def reload_config(self, new_config, new_config_file=None):
         """配置文件切换后由 main_window 调用。"""
         self.config = new_config
+        if new_config_file:
+            self.config_file = new_config_file
         if hasattr(self, 'gitlab_url_input'):
             self.gitlab_url_input.blockSignals(True)
             self.token_input.blockSignals(True)

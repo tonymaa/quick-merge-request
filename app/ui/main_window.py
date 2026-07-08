@@ -1,13 +1,16 @@
 import os
+import sys
 import glob
 import copy
+import subprocess
 import xml.etree.ElementTree as ET
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QEvent
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QPushButton, QFileDialog,
     QLabel, QInputDialog, QMessageBox, QMenu, QComboBox, QFrame
 )
+from PyQt5.QtWidgets import QToolTip
 from PyQt5.QtGui import QIcon, QPainter, QColor
 from PyQt5.QtWidgets import QSystemTrayIcon
 from app.styles import apply_global_styles
@@ -136,7 +139,7 @@ class App(QWidget):
         self.refresh_config_combo()
         # 切换配置后，同步「所有项目」tab 的 config 引用与共享字段
         if hasattr(self, 'all_projects_tab'):
-            self.all_projects_tab.reload_config(self.config)
+            self.all_projects_tab.reload_config(self.config, self.config_file)
             self.all_projects_tab.refresh_projects()
         self._save_last_config_file()
 
@@ -207,6 +210,9 @@ class App(QWidget):
         self.config = self.load_config()
         self.load_workspaces()
         self.refresh_config_combo()
+        if hasattr(self, 'all_projects_tab'):
+            self.all_projects_tab.reload_config(self.config, self.config_file)
+            self.all_projects_tab.refresh_projects()
         self._save_last_config_file()
 
     def initUI(self):
@@ -282,6 +288,14 @@ class App(QWidget):
             self.workspace_tabs.tabBar().setTabVisible(welcome_index, False)
         self.workspace_tabs.setContextMenuPolicy(Qt.CustomContextMenu)
         self.workspace_tabs.customContextMenuRequested.connect(self.show_workspace_context_menu)
+        # tab 悬浮 3 秒后显示项目路径 tooltip
+        self._tab_hover_timer = QTimer(self)
+        self._tab_hover_timer.setSingleShot(True)
+        self._tab_hover_timer.setInterval(1500)
+        self._tab_hover_timer.timeout.connect(self._show_tab_path_tooltip)
+        self._tab_hover_pos = None
+        self._tab_hover_index = -1
+        self.workspace_tabs.tabBar().installEventFilter(self)
         main_layout.addWidget(self.workspace_tabs)
 
         self.setLayout(main_layout)
@@ -417,7 +431,79 @@ class App(QWidget):
             context_menu = QMenu(self)
             rename_action = context_menu.addAction('重命名')
             rename_action.triggered.connect(lambda: self.rename_workspace_tab(tab_index))
+            open_folder_action = context_menu.addAction('打开文件夹所在位置')
+            open_folder_action.triggered.connect(
+                lambda: self._open_workspace_folder(tab_widget)
+            )
+            show_path_action = context_menu.addAction('显示项目路径')
+            show_path_action.triggered.connect(
+                lambda: self._show_workspace_path(tab_widget)
+            )
             context_menu.exec_(self.workspace_tabs.mapToGlobal(position))
+
+    def _open_workspace_folder(self, tab_widget):
+        """在系统文件管理器中打开工作区目录。"""
+        if not isinstance(tab_widget, WorkspaceTab):
+            return
+        path = tab_widget.path
+        if not path or not os.path.isdir(path):
+            QMessageBox.warning(self, '提示', f'路径不存在：{path}')
+            return
+        try:
+            if os.name == 'nt':
+                os.startfile(path)
+            elif sys.platform == 'darwin':
+                subprocess.Popen(['open', path])
+            else:
+                subprocess.Popen(['xdg-open', path])
+        except Exception as e:
+            QMessageBox.warning(self, '打开失败', str(e))
+
+    def _show_workspace_path(self, tab_widget):
+        """弹窗展示工作区名称与本地路径，方便复制。"""
+        if not isinstance(tab_widget, WorkspaceTab):
+            return
+        name = tab_widget.workspace_name or ''
+        path = tab_widget.path or ''
+        QMessageBox.information(self, '项目路径', f'名称：{name}\n路径：{path}')
+
+    def eventFilter(self, obj, event):
+        """监听 workspace tab bar 的悬浮事件：进入/移动时启动 3 秒定时器，离开时取消。"""
+        if obj is self.workspace_tabs.tabBar():
+            etype = event.type()
+            if etype == QEvent.ToolTip:
+                # 让默认 tooltip 行为不触发，自行用定时器控制
+                pos = event.pos()
+                idx = self.workspace_tabs.tabBar().tabAt(pos)
+                if idx != self._tab_hover_index:
+                    self._tab_hover_index = idx
+                    self._tab_hover_pos = event.globalPos()
+                    if idx >= 0:
+                        self._tab_hover_timer.start()
+                    else:
+                        self._tab_hover_timer.stop()
+                else:
+                    self._tab_hover_pos = event.globalPos()
+                return True
+            elif etype in (QEvent.Leave, QEvent.MouseButtonPress, QEvent.MouseButtonDblClick):
+                self._tab_hover_timer.stop()
+                self._tab_hover_index = -1
+                QToolTip.hideText()
+        return super().eventFilter(obj, event)
+
+    def _show_tab_path_tooltip(self):
+        """定时器触发：在鼠标位置显示项目路径 tooltip。"""
+        idx = self._tab_hover_index
+        if idx < 0 or idx >= self.workspace_tabs.count():
+            return
+        tab_widget = self.workspace_tabs.widget(idx)
+        if not isinstance(tab_widget, WorkspaceTab):
+            return
+        name = tab_widget.workspace_name or ''
+        path = tab_widget.path or ''
+        text = f'{name}\n{path}' if name else path
+        if self._tab_hover_pos is not None:
+            QToolTip.showText(self._tab_hover_pos, text, self.workspace_tabs.tabBar())
 
     def rename_workspace_tab(self, index):
         current_name = self.workspace_tabs.tabText(index)
