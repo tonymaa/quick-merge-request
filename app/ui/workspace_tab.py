@@ -16,7 +16,7 @@ from app.async_utils import run_blocking
 from quick_create_branch import create_branch as create_branch_func, get_remote_branches
 from quick_generate_mr_form import (
     get_local_branches, get_all_local_branches, generate_mr, get_mr_defaults,
-    parse_target_branch_from_source, get_gitlab_usernames, get_branch_diff,
+    parse_target_branch_from_source, get_gitlab_usernames, get_current_gitlab_username, get_branch_diff,
     get_commits_between_branches, get_branch_details, get_branches_no_merged,
     get_remote_branch_details, get_remote_url,
     get_merge_requests, merge_merge_request, truncate_mr_title
@@ -1105,6 +1105,8 @@ class WorkspaceTab(QWidget):
         self._mr_list_users_loaded = False
         # 刷新请求序号：用于丢弃过期的并发响应，避免旧数据覆盖新筛选结果
         self._mr_list_refresh_seq = 0
+        # 当前 token 对应的用户名（用于"自己"筛选）
+        self._current_username = None
 
         layout = QVBoxLayout()
         layout.setContentsMargins(16, 16, 16, 16)
@@ -1121,19 +1123,16 @@ class WorkspaceTab(QWidget):
         self.mr_list_state_combo.setCurrentIndex(0)  # 默认 Open
         self.mr_list_state_combo.setMinimumWidth(90)
 
-        # 创建人 / 指派 / 审查者 筛选（可搜索，首项为不筛选）
-        self.mr_list_author_combo = NoWheelComboBox()
+        # 指派 / 审查者 筛选（可搜索，首项为不筛选）
         self.mr_list_assignee_combo = NoWheelComboBox()
         self.mr_list_reviewer_combo = NoWheelComboBox()
-        for combo in (self.mr_list_author_combo, self.mr_list_assignee_combo, self.mr_list_reviewer_combo):
+        for combo in (self.mr_list_assignee_combo, self.mr_list_reviewer_combo):
             combo.addItem('(全部)')
             combo.setMinimumWidth(120)
             self.enable_combo_search(combo)
 
         top_layout.addWidget(QLabel('状态:'))
         top_layout.addWidget(self.mr_list_state_combo)
-        top_layout.addWidget(QLabel('创建人:'))
-        top_layout.addWidget(self.mr_list_author_combo, stretch=1)
         top_layout.addWidget(QLabel('指派:'))
         top_layout.addWidget(self.mr_list_assignee_combo, stretch=1)
         top_layout.addWidget(QLabel('审查者:'))
@@ -1154,7 +1153,6 @@ class WorkspaceTab(QWidget):
 
         # 筛选变化即刷新
         self.mr_list_state_combo.currentIndexChanged.connect(self.run_refresh_mr_list)
-        self.mr_list_author_combo.currentIndexChanged.connect(self.run_refresh_mr_list)
         self.mr_list_assignee_combo.currentIndexChanged.connect(self.run_refresh_mr_list)
         self.mr_list_reviewer_combo.currentIndexChanged.connect(self.run_refresh_mr_list)
 
@@ -1165,9 +1163,9 @@ class WorkspaceTab(QWidget):
 
         # ── MR 表格 ──
         self.mr_list_table = QTableWidget()
-        self.mr_list_table.setColumnCount(8)
+        self.mr_list_table.setColumnCount(7)
         self.mr_list_table.setHorizontalHeaderLabels(
-            ['标题', '源分支 → 目标分支', '作者', '指派', '审查者', '创建时间', '合并状态', '操作']
+            ['标题', '源分支 → 目标分支', '指派', '审查者', '创建时间', '合并状态', '操作']
         )
         self.mr_list_table.setAlternatingRowColors(True)
         self.mr_list_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -1184,13 +1182,11 @@ class WorkspaceTab(QWidget):
         header.setSectionResizeMode(4, QHeaderView.Fixed)
         header.setSectionResizeMode(5, QHeaderView.Fixed)
         header.setSectionResizeMode(6, QHeaderView.Fixed)
-        header.setSectionResizeMode(7, QHeaderView.Fixed)
         self.mr_list_table.setColumnWidth(2, 90)
         self.mr_list_table.setColumnWidth(3, 90)
-        self.mr_list_table.setColumnWidth(4, 90)
-        self.mr_list_table.setColumnWidth(5, 150)
-        self.mr_list_table.setColumnWidth(6, 110)
-        self.mr_list_table.setColumnWidth(7, 80)
+        self.mr_list_table.setColumnWidth(4, 150)
+        self.mr_list_table.setColumnWidth(5, 110)
+        self.mr_list_table.setColumnWidth(6, 80)
 
         self.mr_list_table.setStyleSheet('''
             QTableWidget {
@@ -1224,7 +1220,7 @@ class WorkspaceTab(QWidget):
         return 'opened'
 
     def _ensure_mr_list_users_loaded(self):
-        """懒加载创建人/指派/审查者下拉的用户列表（仅首次）。"""
+        """懒加载指派/审查者下拉的用户列表（仅首次）。"""
         if self._mr_list_users_loaded:
             return
         url = self._get_gitlab_config_value('gitlab_url')
@@ -1241,7 +1237,7 @@ class WorkspaceTab(QWidget):
             if error:
                 self._mr_list_users_loaded = False  # 失败允许重试
                 return
-            for combo in (self.mr_list_author_combo, self.mr_list_assignee_combo, self.mr_list_reviewer_combo):
+            for combo in (self.mr_list_assignee_combo, self.mr_list_reviewer_combo):
                 # 暂时断开信号，避免 addItems 触发刷新
                 combo.blockSignals(True)
                 current = combo.currentText()
@@ -1252,6 +1248,26 @@ class WorkspaceTab(QWidget):
                 combo.blockSignals(False)
 
         run_blocking(_fetch_users, on_success=on_success, parent=self)
+
+    def _ensure_current_username_loaded(self):
+        """异步加载当前 token 对应的用户名（用于"自己"筛选）。"""
+        if self._current_username:
+            return
+        url = self._get_gitlab_config_value('gitlab_url')
+        token = self._get_gitlab_config_value('private_token')
+        if not url or not token:
+            return
+
+        def _run():
+            return get_current_gitlab_username(url, token)
+
+        def on_success(result):
+            username, error = result
+            if error or not username:
+                return
+            self._current_username = username
+
+        run_blocking(_run, on_success=on_success, parent=self)
 
     def run_refresh_mr_list(self):
         """异步拉取当前工作区的 MR 列表（按筛选条件）并填充表格"""
@@ -1265,6 +1281,7 @@ class WorkspaceTab(QWidget):
 
         # 首次刷新时懒加载用户下拉
         self._ensure_mr_list_users_loaded()
+        self._ensure_current_username_loaded()
 
         state = self._current_mr_state_filter()
 
@@ -1272,7 +1289,8 @@ class WorkspaceTab(QWidget):
             text = combo.currentText().strip()
             return None if (not text or text == '(全部)') else text
 
-        author = _filter_value(self.mr_list_author_combo)
+        # 创建人固定为当前用户（"自己"）
+        author = self._current_username
         assignee = _filter_value(self.mr_list_assignee_combo)
         reviewer = _filter_value(self.mr_list_reviewer_combo)
 
@@ -1331,17 +1349,16 @@ class WorkspaceTab(QWidget):
             self.mr_list_table.setItem(row, 0, QTableWidgetItem(mr['title']))
             branch_item = QTableWidgetItem(f"{mr['source_branch']} → {mr['target_branch']}")
             self.mr_list_table.setItem(row, 1, branch_item)
-            self.mr_list_table.setItem(row, 2, QTableWidgetItem(mr['author']))
-            self.mr_list_table.setItem(row, 3, QTableWidgetItem(mr.get('assignees', '')))
-            self.mr_list_table.setItem(row, 4, QTableWidgetItem(mr.get('reviewers', '')))
-            self.mr_list_table.setItem(row, 5, QTableWidgetItem(self._format_mr_datetime(mr['created_at'])))
+            self.mr_list_table.setItem(row, 2, QTableWidgetItem(mr.get('assignees', '')))
+            self.mr_list_table.setItem(row, 3, QTableWidgetItem(mr.get('reviewers', '')))
+            self.mr_list_table.setItem(row, 4, QTableWidgetItem(self._format_mr_datetime(mr['created_at'])))
 
             status_item = QTableWidgetItem(mr['merge_status'])
             if mr['merge_status'] == 'can_be_merged':
                 status_item.setForeground(QColor('#27ae60'))
             elif mr['merge_status'] == 'cannot_be_merged':
                 status_item.setForeground(QColor('#e74c3c'))
-            self.mr_list_table.setItem(row, 6, status_item)
+            self.mr_list_table.setItem(row, 5, status_item)
 
             merge_btn = QPushButton('合并')
             merge_btn.setMinimumHeight(30)
@@ -1362,7 +1379,7 @@ class WorkspaceTab(QWidget):
                     m['iid'], m['title'], m['source_branch'], m['target_branch']
                 )
             )
-            self.mr_list_table.setCellWidget(row, 7, merge_btn)
+            self.mr_list_table.setCellWidget(row, 6, merge_btn)
 
     def run_merge_mr(self, mr_iid, title, source_branch, target_branch):
         """合并前弹确认框，确认后异步调用 GitLab API 合并"""

@@ -245,6 +245,17 @@ def get_gitlab_usernames(gitlab_url, token):
         return [], f'Failed to load users: {e}'
 
 
+def get_current_gitlab_username(gitlab_url, token):
+    """返回当前 token 对应的用户名，用于"自己"筛选。"""
+    try:
+        gl = gitlab.Gitlab(url=gitlab_url, private_token=token)
+        gl.auth()
+        user = gl.user
+        return getattr(user, 'username', None) or None, None
+    except Exception as e:
+        return None, f'GitLab authentication failed: {e}'
+
+
 def get_branch_diff(directory, feature_branch):
     """获取feature分支和其对应的source分支之间的差异"""
     # 检查分支是否包含__from__模式
