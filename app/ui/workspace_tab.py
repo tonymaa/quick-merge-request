@@ -294,7 +294,8 @@ class CherryPickConfirmDialog(QDialog):
             ['git', 'branch', '--list', self.target_branch],
             cwd=self.workspace_tab.path,
             capture_output=True,
-            text=True
+            text=True,
+            encoding='utf-8', errors='replace'
         )
 
         # 检查目标分支是否存在于远程
@@ -302,7 +303,8 @@ class CherryPickConfirmDialog(QDialog):
             ['git', 'branch', '-r', '--list', f'origin/{self.target_branch}'],
             cwd=self.workspace_tab.path,
             capture_output=True,
-            text=True
+            text=True,
+            encoding='utf-8', errors='replace'
         )
 
         # 确定使用哪个命令创建 worktree
@@ -322,7 +324,8 @@ class CherryPickConfirmDialog(QDialog):
             worktree_cmd,
             cwd=self.workspace_tab.path,
             capture_output=True,
-            text=True
+            text=True,
+            encoding='utf-8', errors='replace'
         )
 
         self.append_log(f'STDOUT:\n{worktree_result.stdout}')
@@ -340,7 +343,8 @@ class CherryPickConfirmDialog(QDialog):
             ['git', 'branch', '--show-current'],
             cwd=temp_dir,
             capture_output=True,
-            text=True
+            text=True,
+            encoding='utf-8', errors='replace'
         )
         current_branch = verify_result.stdout.strip()
         self.append_log(f'Worktree 当前分支: {current_branch}\n')
@@ -363,7 +367,8 @@ class CherryPickConfirmDialog(QDialog):
                 ['git', 'push', '-u', 'origin', self.target_branch],
                 cwd=self.cherry_pick_worktree_dir,
                 capture_output=True,
-                text=True
+                text=True,
+                encoding='utf-8', errors='replace'
             )
             self.append_log(f'STDOUT:\n{push_result.stdout}')
             if push_result.stderr:
@@ -391,7 +396,8 @@ class CherryPickConfirmDialog(QDialog):
             ['git', 'cherry-pick', commit_hash],
             cwd=self.cherry_pick_worktree_dir,
             capture_output=True,
-            text=True
+            text=True,
+            encoding='utf-8', errors='replace'
         )
 
         self.append_log(f'STDOUT:\n{cherry_pick_result.stdout}')
@@ -2812,7 +2818,8 @@ class WorkspaceTab(QWidget):
                     cwd=self.path,
                     capture_output=True,
                     text=True,
-                    timeout=30
+                    timeout=30,
+                    encoding='utf-8', errors='replace'
                 )
 
                 if worktree_result.returncode != 0:
@@ -2830,7 +2837,8 @@ class WorkspaceTab(QWidget):
                             cwd=temp_dir,
                             capture_output=True,
                             text=True,
-                            timeout=30
+                            timeout=30,
+                            encoding='utf-8', errors='replace'
                         )
 
                         if result.returncode != 0:
@@ -2858,7 +2866,8 @@ class WorkspaceTab(QWidget):
                                 cwd=temp_dir,
                                 capture_output=True,
                                 text=True,
-                                timeout=10
+                                timeout=10,
+                                encoding='utf-8', errors='replace'
                             )
                             if not status_result.stdout.strip():
                                 # 没有更改，说明提交内容已存在
@@ -3001,7 +3010,8 @@ class WorkspaceTab(QWidget):
                     ['git', 'log', '--pretty=%an|%ae|%ai', '-1', commit_hash],
                     cwd=self.path,
                     capture_output=True,
-                    text=True
+                    text=True,
+                    encoding='utf-8', errors='replace'
                 )
 
                 author_name = ''

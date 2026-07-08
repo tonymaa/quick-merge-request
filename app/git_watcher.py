@@ -39,7 +39,8 @@ class GitEventHandler(FileSystemEventHandler):
                 cwd=self.repo_path,
                 capture_output=True,
                 text=True,
-                check=True
+                check=True,
+                encoding='utf-8', errors='replace'
             )
             current_branch = branch_result.stdout.strip() if branch_result.returncode == 0 else 'HEAD'
 
@@ -48,7 +49,8 @@ class GitEventHandler(FileSystemEventHandler):
                 cwd=self.repo_path,
                 capture_output=True,
                 text=True,
-                check=True
+                check=True,
+                encoding='utf-8', errors='replace'
             )
             if result.returncode == 0:
                 parts = result.stdout.strip().split('|')

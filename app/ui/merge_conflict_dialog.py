@@ -572,7 +572,8 @@ class MergeConflictDialog(QDialog):
             ['git', 'show', ':2:' + file_path],
             cwd=self.repo_path,
             capture_output=True,
-            text=True
+            text=True,
+            encoding='utf-8', errors='replace'
         )
         local_content = local_result.stdout if local_result.returncode == 0 else ''
 
@@ -581,7 +582,8 @@ class MergeConflictDialog(QDialog):
             ['git', 'show', ':1:' + file_path],
             cwd=self.repo_path,
             capture_output=True,
-            text=True
+            text=True,
+            encoding='utf-8', errors='replace'
         )
         base_content = base_result.stdout if base_result.returncode == 0 else ''
 
@@ -590,7 +592,8 @@ class MergeConflictDialog(QDialog):
             ['git', 'show', ':3:' + file_path],
             cwd=self.repo_path,
             capture_output=True,
-            text=True
+            text=True,
+            encoding='utf-8', errors='replace'
         )
         incoming_content = incoming_result.stdout if incoming_result.returncode == 0 else ''
 
@@ -856,7 +859,8 @@ class MergeConflictDialog(QDialog):
                 ['git', 'add', file_path],
                 cwd=self.repo_path,
                 capture_output=True,
-                text=True
+                text=True,
+                encoding='utf-8', errors='replace'
             )
             if result.returncode != 0:
                 QMessageBox.critical(
@@ -875,7 +879,8 @@ class MergeConflictDialog(QDialog):
             ['git', 'diff', '--name-only', '--diff-filter=U'],
             cwd=repo_path,
             capture_output=True,
-            text=True
+            text=True,
+            encoding='utf-8', errors='replace'
         )
 
         if result.returncode == 0 and result.stdout.strip():
