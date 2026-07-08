@@ -109,6 +109,17 @@ class AllProjectsTab(QWidget):
         self._mr_form_rows = []
         # 重建行时保留的旧选择（path -> (source_text, target_text)）
         self._mr_form_old_cache = {}
+        # 缓存最近一次刷新得到的"共有分支(交集) / 所有分支(并集)"
+        self._mr_last_common_branches = []
+        self._mr_last_all_branches = []
+        # 分支出现次数（branch -> count）和项目总数，用于下拉排序与显示
+        self._mr_last_branch_counts = {}
+        self._mr_last_total_projects = 0
+        # 批量 commit 信息刷新的代际同步：用于"全部刷新完成后自动选中最热门提交"
+        self._mr_commit_refresh_gen = 0
+        self._mr_commit_refresh_target = 0
+        self._mr_commit_refresh_done = 0
+        self._mr_auto_select_max_pending = False
 
         # 批量创建分支：聚合分支 → 拥有该分支的 WorkspaceTab 列表
         self._cb_branch_projects = {}
@@ -844,6 +855,12 @@ class AllProjectsTab(QWidget):
         # 共有分支选择器 + 刷新按钮（放在标题模板上方）
         common_branches_layout = QHBoxLayout()
         common_branches_layout.setSpacing(12)
+        # 切换"共有分支(交集)/所有分支(并集)"
+        self.mr_show_all_branches_cb = QCheckBox('显示所有分支')
+        self.mr_show_all_branches_cb.setToolTip(
+            '勾选：下拉框显示所有项目的分支并集；不勾选：只显示所有项目共有的分支（交集）。'
+        )
+        self.mr_show_all_branches_cb.toggled.connect(self._on_show_all_branches_toggled)
         self.mr_common_source_combo = NoWheelComboBox()
         self.mr_common_source_combo.setEditable(True)
         self.mr_common_source_combo.setMinimumWidth(160)
@@ -859,7 +876,9 @@ class AllProjectsTab(QWidget):
         self.mr_common_target_combo.currentIndexChanged.connect(self._auto_apply_common_branches)
         # 刷新所有项目分支按钮（移到这里，与单 MR 侧风格一致）
         self.mr_refresh_branches_btn = QPushButton('刷新所有项目分支')
-        common_branches_layout.addWidget(QLabel('共有分支:'))
+        self.mr_branches_label = QLabel('共有分支:')
+        common_branches_layout.addWidget(self.mr_show_all_branches_cb)
+        common_branches_layout.addWidget(self.mr_branches_label)
         common_branches_layout.addWidget(QLabel('源:'))
         common_branches_layout.addWidget(self.mr_common_source_combo)
         common_branches_layout.addWidget(QLabel('目标:'))
@@ -904,6 +923,17 @@ class AllProjectsTab(QWidget):
         self.mr_row_count_label.setStyleSheet('color: #888;')
         table_ops.addWidget(self.mr_row_count_label)
         table_ops.addStretch()
+
+        # 快速选择：列出表格中所有提交信息去重后的数据，按出现次数排序
+        self.mr_commit_quick_combo = NoWheelComboBox()
+        self.mr_commit_quick_combo.setEditable(True)
+        self.mr_commit_quick_combo.setMinimumWidth(280)
+        self.mr_commit_quick_combo.addItem('(快速选择提交信息)')
+        _enable_combo_search(self.mr_commit_quick_combo)
+        self.mr_commit_quick_combo.currentIndexChanged.connect(self._on_commit_quick_selected)
+        table_ops.addWidget(QLabel('快速选择:'))
+        table_ops.addWidget(self.mr_commit_quick_combo, stretch=1)
+
         layout.addLayout(table_ops)
 
         # 每项目行表格
@@ -1190,36 +1220,47 @@ class AllProjectsTab(QWidget):
         def _run():
             results = []
             all_branch_sets = []
+            branch_counter = {}  # branch -> 出现的项目数
             for row_data in rows:
                 ws = row_data[0]
                 try:
                     # 远程分支作为源和目标候选
                     branches, msg = _safe_get_remote_branches(ws.path)
                     results.append((ws, branches, None))
-                    all_branch_sets.append(set(branches))
+                    branch_set = set(branches)
+                    all_branch_sets.append(branch_set)
+                    for b in branch_set:
+                        branch_counter[b] = branch_counter.get(b, 0) + 1
                 except Exception as e:
                     results.append((ws, [], str(e)))
                     all_branch_sets.append(set())
-            # 计算共有分支
+            # 计算共有分支（交集）和所有分支（并集）
             common_branches = set()
+            all_branches_union = set()
             if all_branch_sets:
-                common_branches = all_branch_sets[0]
+                common_branches = set(all_branch_sets[0])
+                all_branches_union = set(all_branch_sets[0])
                 for branch_set in all_branch_sets[1:]:
                     common_branches &= branch_set
-            return results, sorted(common_branches)
+                    all_branches_union |= branch_set
+            total_projects = len(all_branch_sets)
+            return (
+                results,
+                sorted(common_branches),
+                sorted(all_branches_union),
+                branch_counter,
+                total_projects,
+            )
 
-        def on_success(results_and_common):
-            results, common_branches = results_and_common
+        def on_success(payload):
+            results, common_branches, all_branches_union, branch_counter, total_projects = payload
             self.mr_refresh_branches_btn.setEnabled(True)
-            # 填充共有分支选择器
-            self.mr_common_source_combo.blockSignals(True)
-            self.mr_common_target_combo.blockSignals(True)
-            self.mr_common_source_combo.clear()
-            self.mr_common_target_combo.clear()
-            self.mr_common_source_combo.addItems(common_branches)
-            self.mr_common_target_combo.addItems(common_branches)
-            self.mr_common_source_combo.blockSignals(False)
-            self.mr_common_target_combo.blockSignals(False)
+            # 缓存两种列表 + 出现次数，并填充下拉
+            self._mr_last_common_branches = common_branches
+            self._mr_last_all_branches = all_branches_union
+            self._mr_last_branch_counts = branch_counter
+            self._mr_last_total_projects = total_projects
+            self._populate_common_branch_combos()
 
             self._applying_common_branches = True
             # 用 path -> result 映射，按当前 _mr_form_rows 迭代，避免使用已被销毁的旧控件
@@ -1267,9 +1308,8 @@ class AllProjectsTab(QWidget):
             # 旧缓存已应用，清空避免下次误用
             self._mr_form_old_cache = {}
 
-            # 拉取每行的 commit 信息（仅当前还在表格里的行）
-            for row_data in self._mr_form_rows:
-                self._update_commit_info_for_row(row_data)
+            # 拉取每行的 commit 信息，并自动选中最大次数的提交
+            self._trigger_all_rows_commit_refresh(auto_select_max=True)
 
         run_blocking(_run, on_success=on_success, parent=self)
 
@@ -1288,8 +1328,12 @@ class AllProjectsTab(QWidget):
         if not self._applying_common_branches:
             self._mr_form_manual_target.add(ws.path)
 
-    def _update_commit_info_for_row(self, row_data):
-        """异步获取源分支最新 commit 主题与时间，更新到对应行的标签。"""
+    def _update_commit_info_for_row(self, row_data, batch_gen=None):
+        """异步获取源分支最新 commit 主题与时间，更新到对应行的标签。
+
+        batch_gen: 批量刷新代际号；非 None 时表示是批量流程的一部分，
+                    完成后会参与代际计数，所有完成后会触发自动选中最大提交。
+        """
         ws, _cb, src_combo, _tgt, msg_label, time_label, _status = row_data
         source = src_combo.currentText().strip()
         if not source or source == '(待刷新)':
@@ -1298,6 +1342,7 @@ class AllProjectsTab(QWidget):
             msg_label.setStyleSheet('color: #888;')
             time_label.setText('—')
             time_label.setStyleSheet('color: #888;')
+            self._on_row_commit_done(batch_gen)
             return
 
         msg_label.setText('加载中...')
@@ -1336,8 +1381,95 @@ class AllProjectsTab(QWidget):
             else:
                 time_label.setText('—')
                 time_label.setStyleSheet('color: #888;')
+            self._on_row_commit_done(batch_gen)
 
         run_blocking(_run, on_success=on_success, parent=self)
+
+    def _trigger_all_rows_commit_refresh(self, auto_select_max=False):
+        """对表格所有行触发 commit 信息刷新，可选全部完成后自动选中最大提交。"""
+        rows = list(self._mr_form_rows)
+        if not rows:
+            self._refresh_commit_quick_combo()
+            if auto_select_max:
+                self._auto_select_max_commit()
+            return
+        self._mr_commit_refresh_gen += 1
+        gen = self._mr_commit_refresh_gen
+        self._mr_commit_refresh_target = len(rows)
+        self._mr_commit_refresh_done = 0
+        self._mr_auto_select_max_pending = auto_select_max
+        for row_data in rows:
+            self._update_commit_info_for_row(row_data, batch_gen=gen)
+
+    def _on_row_commit_done(self, batch_gen=None):
+        """单行 commit 信息刷新完成：刷新快速选择下拉，必要时触发自动选中。"""
+        self._refresh_commit_quick_combo()
+        if batch_gen is None or batch_gen != self._mr_commit_refresh_gen:
+            return
+        self._mr_commit_refresh_done += 1
+        if (self._mr_commit_refresh_done >= self._mr_commit_refresh_target
+                and self._mr_auto_select_max_pending):
+            self._mr_auto_select_max_pending = False
+            self._auto_select_max_commit()
+
+    def _refresh_commit_quick_combo(self):
+        """根据表格各行的提交信息重建快速选择下拉，按出现次数倒序排序。"""
+        counter = {}
+        for row_data in self._mr_form_rows:
+            msg_label = row_data[4]
+            text = msg_label.text().strip()
+            if not text or text in ('—', '（无）', '加载中...'):
+                continue
+            counter[text] = counter.get(text, 0) + 1
+        if not counter:
+            sorted_items = []
+        else:
+            sorted_items = sorted(counter.items(), key=lambda x: (-x[1], x[0]))
+
+        current_data = self.mr_commit_quick_combo.currentData()
+        self.mr_commit_quick_combo.blockSignals(True)
+        self.mr_commit_quick_combo.clear()
+        self.mr_commit_quick_combo.addItem('(快速选择提交信息)', userData=None)
+        for msg, count in sorted_items:
+            label = msg if count == 1 else f'{msg}  ({count})'
+            self.mr_commit_quick_combo.addItem(label, userData=msg)
+        # 恢复之前的选择（按 userData 比对原始提交信息）
+        restore_idx = -1
+        if current_data:
+            for i in range(self.mr_commit_quick_combo.count()):
+                if self.mr_commit_quick_combo.itemData(i) == current_data:
+                    restore_idx = i
+                    break
+        if restore_idx >= 0:
+            self.mr_commit_quick_combo.setCurrentIndex(restore_idx)
+        else:
+            self.mr_commit_quick_combo.setCurrentIndex(0)
+        self.mr_commit_quick_combo.blockSignals(False)
+
+    def _on_commit_quick_selected(self, _idx=None):
+        """选择某条提交信息后：匹配行勾选，其余行取消勾选（替换式选择）。"""
+        idx = self.mr_commit_quick_combo.currentIndex()
+        if idx <= 0:
+            return
+        target_msg = self.mr_commit_quick_combo.itemData(idx)
+        if not target_msg:
+            return
+        for row_data in self._mr_form_rows:
+            cb = row_data[1]
+            should_check = row_data[4].text().strip() == target_msg
+            if cb.isChecked() != should_check:
+                cb.setChecked(should_check)
+        self._refresh_mr_row_count()
+
+    def _auto_select_max_commit(self):
+        """自动选中"出现次数最多"的提交信息，并勾选对应项目。"""
+        if self.mr_commit_quick_combo.count() <= 1:
+            return
+        self.mr_commit_quick_combo.blockSignals(True)
+        self.mr_commit_quick_combo.setCurrentIndex(1)  # 占位之后第 1 项即最大次数
+        self.mr_commit_quick_combo.blockSignals(False)
+        # blockSignals 后手动触发一次勾选
+        self._on_commit_quick_selected()
 
     def _set_all_mr_rows_checked(self, checked):
         for row_data in self._mr_form_rows:
@@ -1351,6 +1483,53 @@ class AllProjectsTab(QWidget):
             return
         checked = sum(1 for r in self._mr_form_rows if r[1].isChecked())
         self.mr_row_count_label.setText(f'{checked} / {total} 行将创建')
+
+    def _on_show_all_branches_toggled(self, _checked):
+        """切换"显示所有分支"：更新 label 文案并刷新下拉候选。"""
+        show_all = self.mr_show_all_branches_cb.isChecked()
+        self.mr_branches_label.setText('所有分支:' if show_all else '共有分支:')
+        self._populate_common_branch_combos()
+
+    def _populate_common_branch_combos(self):
+        """依据复选框状态填充共有/所有分支下拉。
+
+        排序：按"分支出现的项目数"倒序（次数多的放上面），次数相同的按名字升序。
+        显示：次数 < 总项目数时，追加 "(count/total)" 后缀；次数 = 总项目数时不追加。
+        userData 始终为原始分支名，便于按名查找与恢复选择。
+        """
+        show_all = self.mr_show_all_branches_cb.isChecked()
+        branches = self._mr_last_all_branches if show_all else self._mr_last_common_branches
+        counts = self._mr_last_branch_counts or {}
+        total = self._mr_last_total_projects or 0
+        # 排序：(出现次数倒序, 分支名升序)
+        sorted_branches = sorted(branches, key=lambda b: (-(counts.get(b, 0)), b))
+
+        def _make_label(b):
+            c = counts.get(b, 0)
+            if total and c and c < total:
+                return f'{b}  ({c}/{total})'
+            return b
+
+        # 保留当前选择（按 userData 比对原始分支名）
+        prev_src = self.mr_common_source_combo.currentData()
+        prev_tgt = self.mr_common_target_combo.currentData()
+        self.mr_common_source_combo.blockSignals(True)
+        self.mr_common_target_combo.blockSignals(True)
+        self.mr_common_source_combo.clear()
+        self.mr_common_target_combo.clear()
+        for b in sorted_branches:
+            self.mr_common_source_combo.addItem(_make_label(b), userData=b)
+            self.mr_common_target_combo.addItem(_make_label(b), userData=b)
+        for combo, prev in (
+            (self.mr_common_source_combo, prev_src),
+            (self.mr_common_target_combo, prev_tgt),
+        ):
+            if prev:
+                idx = combo.findData(prev)
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+        self.mr_common_source_combo.blockSignals(False)
+        self.mr_common_target_combo.blockSignals(False)
 
     def _auto_apply_common_branches(self):
         """共有分支变化时自动应用到所有项目行（手动选过的项目除外）。"""
@@ -1380,9 +1559,8 @@ class AllProjectsTab(QWidget):
             status.setText('已应用默认分支')
             status.setStyleSheet('color: #1677ff;')
         self._applying_common_branches = False
-        # 共有分支变化后，重新拉取每行 commit 信息
-        for row_data in self._mr_form_rows:
-            self._update_commit_info_for_row(row_data)
+        # 共有分支变化后，重新拉取每行 commit 信息，并自动选中最大次数的提交
+        self._trigger_all_rows_commit_refresh(auto_select_max=True)
 
     def run_preview_mr_content(self):
         """弹出对话框，展示每个项目最终生成的 MR 标题/描述。"""
