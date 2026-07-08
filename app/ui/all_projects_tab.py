@@ -27,7 +27,7 @@ from app.widgets import NoWheelComboBox
 from quick_create_branch import create_branch as create_branch_func
 from quick_generate_mr_form import (
     generate_mr, get_merge_requests, merge_merge_request,
-    get_gitlab_usernames, get_branch_details, get_remote_branch_details,
+    get_gitlab_usernames, get_current_gitlab_username, get_branch_details, get_remote_branch_details,
     get_branches_no_merged, truncate_mr_title, parse_target_branch_from_source
 )
 
@@ -94,6 +94,8 @@ class AllProjectsTab(QWidget):
         self._mr_list_refresh_seq = 0
         # MR 表格行 -> (workspace_tab, mr_dict) 映射，用于合并按钮回调
         self._mr_row_context = []
+        # 当前 token 对应的用户名（"自己"筛选）
+        self._current_username = None
 
         # 分支管理共享状态
         self._branch_mgmt_all_data = []      # list[(project_name, branch_dict, type_str, workspace_tab)]
@@ -1154,15 +1156,14 @@ class AllProjectsTab(QWidget):
 
         # 顺带把 MR 列表 tab 的用户下拉也填充
         self._mr_list_users_loaded = True
-        if hasattr(self, 'mr_list_author_combo'):
-            for combo in (self.mr_list_author_combo, self.mr_list_assignee_combo, self.mr_list_reviewer_combo):
-                current = combo.currentText()
-                combo.blockSignals(True)
-                for u in users:
-                    if combo.findText(u, Qt.MatchFixedString) < 0:
-                        combo.addItem(u)
-                combo.setCurrentText(current)
-                combo.blockSignals(False)
+        for combo in (self.mr_list_assignee_combo, self.mr_list_reviewer_combo):
+            current = combo.currentText()
+            combo.blockSignals(True)
+            for u in users:
+                if combo.findText(u, Qt.MatchFixedString) < 0:
+                    combo.addItem(u)
+            combo.setCurrentText(current)
+            combo.blockSignals(False)
 
     def run_batch_refresh_branches(self):
         if not self._mr_form_rows:
@@ -2029,10 +2030,9 @@ class AllProjectsTab(QWidget):
         self.mr_list_project_combo.addItem('(全部项目)')
         self.mr_list_project_combo.setMinimumWidth(160)
 
-        self.mr_list_author_combo = NoWheelComboBox()
         self.mr_list_assignee_combo = NoWheelComboBox()
         self.mr_list_reviewer_combo = NoWheelComboBox()
-        for combo in (self.mr_list_author_combo, self.mr_list_assignee_combo, self.mr_list_reviewer_combo):
+        for combo in (self.mr_list_assignee_combo, self.mr_list_reviewer_combo):
             combo.addItem('(全部)')
             combo.setMinimumWidth(120)
             _enable_combo_search(combo)
@@ -2041,8 +2041,6 @@ class AllProjectsTab(QWidget):
         top.addWidget(self.mr_list_state_combo)
         top.addWidget(QLabel('项目:'))
         top.addWidget(self.mr_list_project_combo)
-        top.addWidget(QLabel('创建人:'))
-        top.addWidget(self.mr_list_author_combo)
         top.addWidget(QLabel('指派:'))
         top.addWidget(self.mr_list_assignee_combo)
         top.addWidget(QLabel('审查者:'))
@@ -2059,7 +2057,6 @@ class AllProjectsTab(QWidget):
 
         self.mr_list_state_combo.currentIndexChanged.connect(self.run_batch_refresh_mr_list)
         self.mr_list_project_combo.currentIndexChanged.connect(self._apply_mr_list_project_filter)
-        self.mr_list_author_combo.currentIndexChanged.connect(self.run_batch_refresh_mr_list)
         self.mr_list_assignee_combo.currentIndexChanged.connect(self.run_batch_refresh_mr_list)
         self.mr_list_reviewer_combo.currentIndexChanged.connect(self.run_batch_refresh_mr_list)
         self.mr_list_refresh_btn.clicked.connect(self.run_batch_refresh_mr_list)
@@ -2069,9 +2066,9 @@ class AllProjectsTab(QWidget):
         layout.addWidget(self.mr_list_status)
 
         self.mr_list_table = QTableWidget()
-        self.mr_list_table.setColumnCount(9)
+        self.mr_list_table.setColumnCount(8)
         self.mr_list_table.setHorizontalHeaderLabels(
-            ['标题', '项目', '源分支 → 目标分支', '作者', '指派', '审查者', '创建时间', '合并状态', '操作']
+            ['标题', '项目', '源分支 → 目标分支', '指派', '审查者', '创建时间', '合并状态', '操作']
         )
         self.mr_list_table.setAlternatingRowColors(True)
         self.mr_list_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -2087,14 +2084,12 @@ class AllProjectsTab(QWidget):
         hdr.setSectionResizeMode(5, QHeaderView.Fixed)
         hdr.setSectionResizeMode(6, QHeaderView.Fixed)
         hdr.setSectionResizeMode(7, QHeaderView.Fixed)
-        hdr.setSectionResizeMode(8, QHeaderView.Fixed)
         self.mr_list_table.setColumnWidth(1, 140)
         self.mr_list_table.setColumnWidth(3, 90)
         self.mr_list_table.setColumnWidth(4, 90)
-        self.mr_list_table.setColumnWidth(5, 90)
-        self.mr_list_table.setColumnWidth(6, 150)
-        self.mr_list_table.setColumnWidth(7, 100)
-        self.mr_list_table.setColumnWidth(8, 80)
+        self.mr_list_table.setColumnWidth(5, 150)
+        self.mr_list_table.setColumnWidth(6, 100)
+        self.mr_list_table.setColumnWidth(7, 80)
         layout.addWidget(self.mr_list_table, stretch=1)
 
         self.mr_list_tab.setLayout(layout)
@@ -2138,6 +2133,26 @@ class AllProjectsTab(QWidget):
 
         run_blocking(_run, on_success=on_success, parent=self)
 
+    def _ensure_current_username_loaded(self):
+        """异步加载当前 token 对应的用户名（用于"自己"筛选）。"""
+        if self._current_username:
+            return
+        url = self._get_gitlab_value('gitlab_url')
+        token = self._get_gitlab_value('private_token')
+        if not url or not token:
+            return
+
+        def _run():
+            return get_current_gitlab_username(url, token)
+
+        def on_success(result):
+            username, error = result
+            if error or not username:
+                return
+            self._current_username = username
+
+        run_blocking(_run, on_success=on_success, parent=self)
+
     def run_batch_refresh_mr_list(self):
         selected = self._selected_workspace_tabs()
         if not selected:
@@ -2152,6 +2167,7 @@ class AllProjectsTab(QWidget):
 
         self._ensure_mr_list_users_loaded()
         self._refresh_mr_list_project_combo()
+        self._ensure_current_username_loaded()
 
         state = self._current_mr_state()
 
@@ -2159,7 +2175,8 @@ class AllProjectsTab(QWidget):
             text = combo.currentText().strip()
             return None if (not text or text == '(全部)') else text
 
-        author = _filter_value(self.mr_list_author_combo)
+        # 创建人固定为当前用户（"自己"）
+        author = self._current_username
         assignee = _filter_value(self.mr_list_assignee_combo)
         reviewer = _filter_value(self.mr_list_reviewer_combo)
 
@@ -2218,17 +2235,16 @@ class AllProjectsTab(QWidget):
             self.mr_list_table.setItem(row, 0, QTableWidgetItem(mr.get('title', '')))
             self.mr_list_table.setItem(row, 1, QTableWidgetItem(ws.workspace_name or ws.path))
             self.mr_list_table.setItem(row, 2, QTableWidgetItem(f"{mr.get('source_branch', '')} → {mr.get('target_branch', '')}"))
-            self.mr_list_table.setItem(row, 3, QTableWidgetItem(mr.get('author', '')))
-            self.mr_list_table.setItem(row, 4, QTableWidgetItem(mr.get('assignees', '')))
-            self.mr_list_table.setItem(row, 5, QTableWidgetItem(mr.get('reviewers', '')))
-            self.mr_list_table.setItem(row, 6, QTableWidgetItem(_format_mr_datetime(mr.get('created_at', ''))))
+            self.mr_list_table.setItem(row, 3, QTableWidgetItem(mr.get('assignees', '')))
+            self.mr_list_table.setItem(row, 4, QTableWidgetItem(mr.get('reviewers', '')))
+            self.mr_list_table.setItem(row, 5, QTableWidgetItem(_format_mr_datetime(mr.get('created_at', ''))))
 
             status_item = QTableWidgetItem(mr.get('merge_status', ''))
             if mr.get('merge_status') == 'can_be_merged':
                 status_item.setForeground(QColor('#27ae60'))
             elif mr.get('merge_status') == 'cannot_be_merged':
                 status_item.setForeground(QColor('#e74c3c'))
-            self.mr_list_table.setItem(row, 7, status_item)
+            self.mr_list_table.setItem(row, 6, status_item)
 
             merge_btn = QPushButton('合并')
             merge_btn.setMinimumHeight(30)
@@ -2241,7 +2257,7 @@ class AllProjectsTab(QWidget):
                 merge_btn.setEnabled(False)
                 merge_btn.setToolTip('仅 Open 状态的 MR 可合并')
             merge_btn.clicked.connect(lambda _checked=False, w=ws, m=mr: self._merge_mr(w, m, url, token))
-            self.mr_list_table.setCellWidget(row, 8, merge_btn)
+            self.mr_list_table.setCellWidget(row, 7, merge_btn)
 
             self._mr_row_context.append((ws, mr))
 
