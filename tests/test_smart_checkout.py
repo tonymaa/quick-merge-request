@@ -63,3 +63,38 @@ def test_smart_checkout_ok_stash_when_direct_fails(mock_cur, mock_run):
     assert mock_run.call_count == 4
 
 
+@patch('quick_create_branch.run_command')
+@patch('quick_create_branch.current_branch')
+def test_smart_checkout_fail_when_stash_fails(mock_cur, mock_run):
+    mock_cur.return_value = 'main'
+    # checkout 失败 → stash 失败
+    mock_run.side_effect = [
+        (False, '', 'conflict'),
+        (False, '', 'stash error'),
+    ]
+    status, msg = smart_checkout('/fake', 'feature')
+    assert status == 'fail'
+    assert 'stash 失败' in msg
+    assert mock_run.call_count == 2  # 不应继续 checkout / list / pop
+
+
+@patch('quick_create_branch.run_command')
+@patch('quick_create_branch.current_branch')
+def test_smart_checkout_fail_rolls_back_stash(mock_cur, mock_run):
+    mock_cur.return_value = 'main'
+    # checkout 失败 → stash 成功 → checkout 仍失败 → stash pop
+    mock_run.side_effect = [
+        (False, '', 'conflict'),
+        (True, 'Saved', ''),
+        (False, '', 'still conflicting'),
+        (True, 'restored', ''),  # git stash pop
+    ]
+    status, msg = smart_checkout('/fake', 'feature')
+    assert status == 'fail'
+    assert '改动已恢复' in msg
+    # 最后一次调用必须是 stash pop
+    last_call_args = mock_run.call_args_list[-1][0][0]
+    assert last_call_args == ['git', 'stash', 'pop']
+
+
+
