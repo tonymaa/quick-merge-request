@@ -18,3 +18,48 @@ def test_current_branch_returns_none_on_failure(mock_run):
 def test_current_branch_returns_none_on_detached(mock_run):
     mock_run.return_value = (True, '  (HEAD detached at abc123)\n', '')
     assert current_branch('/fake') is None
+
+
+from quick_create_branch import smart_checkout
+
+
+@patch('quick_create_branch.current_branch')
+def test_smart_checkout_skip_when_already_on_target(mock_cur):
+    mock_cur.return_value = 'feature'
+    status, msg = smart_checkout('/fake', 'feature')
+    assert status == 'skip'
+    assert '已在目标分支' in msg
+
+
+@patch('quick_create_branch.run_command')
+@patch('quick_create_branch.current_branch')
+def test_smart_checkout_ok_direct_when_checkout_succeeds(mock_cur, mock_run):
+    mock_cur.return_value = 'main'
+    # 第一次调用：git checkout feature → 成功
+    mock_run.return_value = (True, 'Switching to branch feature\n', '')
+    status, msg = smart_checkout('/fake', 'feature')
+    assert status == 'ok'
+    assert '已切换' in msg and 'feature' in msg
+    # 只调用了一次 run_command（不应 stash）
+    assert mock_run.call_count == 1
+
+
+@patch('quick_create_branch.run_command')
+@patch('quick_create_branch.current_branch')
+def test_smart_checkout_ok_stash_when_direct_fails(mock_cur, mock_run):
+    mock_cur.return_value = 'main'
+    # 依次：checkout 失败 → stash 成功 → checkout 成功 → stash list
+    mock_run.side_effect = [
+        (False, '', 'local changes would be overwritten'),
+        (True, 'Saved working directory and index state', ''),
+        (True, 'Switching to branch feature\n', ''),
+        (True, 'stash@{0}: On main: auto-stash\n', ''),
+    ]
+    status, msg = smart_checkout('/fake', 'feature')
+    assert status == 'ok_stash'
+    assert 'feature' in msg
+    assert 'stash@{0}' in msg
+    assert 'git stash pop' in msg
+    assert mock_run.call_count == 4
+
+

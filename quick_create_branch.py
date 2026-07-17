@@ -1,4 +1,5 @@
 import subprocess
+from datetime import datetime
 
 def run_command(command, directory):
     try:
@@ -79,6 +80,58 @@ def current_branch(directory: str) -> str | None:
         if stripped.startswith('* '):
             return stripped[2:].strip()
     return None
+
+
+def smart_checkout(directory: str, target_branch: str) -> tuple[str, str]:
+    """智能切换分支：直接 checkout → 失败 stash → 仍失败回滚。
+
+    返回 (status, message)。status:
+      - 'skip':     已在目标分支
+      - 'ok':       切换成功，改动保留
+      - 'ok_stash': 切换成功，改动已 stash
+      - 'fail':     切换失败（已回滚 stash 或 stash 本身失败）
+    """
+    cur = current_branch(directory)
+    if cur == target_branch:
+        return ('skip', f'已在目标分支 {target_branch}')
+
+    # 第一次尝试：直接 checkout
+    success, stdout, stderr = run_command(
+        ['git', 'checkout', target_branch], directory
+    )
+    if success:
+        return ('ok', f'已切换到 {target_branch}，工作区改动已保留')
+
+    # 失败 → stash 后重试
+    ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    stash_msg = f'auto-stash: {cur} → {target_branch} [{ts}]'
+    s_ok, s_out, s_err = run_command(
+        ['git', 'stash', 'push', '-m', stash_msg], directory
+    )
+    if not s_ok:
+        return ('fail', f'stash 失败: {s_err}')
+
+    c2_ok, c2_out, c2_err = run_command(
+        ['git', 'checkout', target_branch], directory
+    )
+    if c2_ok:
+        l_ok, l_out, l_err = run_command(
+            ['git', 'stash', 'list'], directory
+        )
+        ref = 'stash@{0}'
+        if l_ok:
+            lines = [ln for ln in l_out.splitlines() if ln.strip()]
+            if lines:
+                ref = lines[0].split(':')[0]
+        return ('ok_stash',
+                f'已切换到 {target_branch}\n'
+                f'原工作区有冲突已 stash: {ref}\n'
+                f'stash 消息: {stash_msg}\n'
+                f'恢复: git stash pop')
+
+    # checkout 仍失败 → 回滚 stash
+    run_command(['git', 'stash', 'pop'], directory)
+    return ('fail', f'切换失败（改动已恢复）: {c2_err}')
 
 if __name__ == '__main__':
     # Example usage:
