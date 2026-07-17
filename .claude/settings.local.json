@@ -3,7 +3,21 @@
     "allow": [
       "Bash(python -m py_compile:*)",
       "Bash(python:*)",
-      "Read(//e/**)"
+      "Read(//e/**)",
+      "Bash(git add *)",
+      "Bash(git commit -m 'fix: 删除分支改为异步逐个执行，避免主线程卡顿 *)",
+      "Bash(git push *)",
+      "Bash(git commit *)",
+      "Read(//tmp/**)",
+      "Bash(git -C E:/project/quick_merge_request add docs/superpowers/specs/2026-07-17-checkout-recent-branch-design.md)",
+      "Bash(git -C E:/project/quick_merge_request commit -m 'docs: checkout 最近创建分支设计文档 *)",
+      "Bash(git -C E:/project/quick_merge_request add docs/superpowers/plans/2026-07-17-checkout-recent-branch.md)",
+      "Bash(git -C E:/project/quick_merge_request commit -m 'docs: checkout 最近分支实现计划 *)",
+      "Bash(git -C E:/project/quick_merge_request rev-parse --show-toplevel)",
+      "Bash(cat \"$\\(git -C E:/project/quick_merge_request rev-parse --show-toplevel\\)/.superpowers/sdd/progress.md\")",
+      "Bash(bash *)",
+      "Bash(git -C E:/project/quick_merge_request rev-parse HEAD)",
+      "Bash(git *)"
     ]
   }
 }

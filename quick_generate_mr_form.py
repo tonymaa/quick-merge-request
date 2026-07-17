@@ -110,7 +110,8 @@ def _extract_username(user_info):
 
 
 def get_merge_requests(directory, gitlab_url, token, state='opened',
-                       author=None, assignee=None, reviewer=None):
+                       author=None, assignee=None, reviewer=None,
+                       with_approvals=False):
     """按筛选条件获取当前工作区对应 GitLab 项目的 MR 列表。
 
     Args:
@@ -118,12 +119,15 @@ def get_merge_requests(directory, gitlab_url, token, state='opened',
         author: 创建人 username，None 或空表示不筛选
         assignee: 指派人 username，None 或空表示不筛选
         reviewer: 审查者 username，None 或空表示不筛选
+        with_approvals: True 时对每个 MR 调用 approvals API（多 N 次请求）
 
     Returns:
         (mr_list, error): 成功时 error 为 None；失败时 mr_list 为 []。
         每个元素为 dict: {iid, title, source_branch, target_branch, author,
                           assignees, reviewers, created_at, web_url,
-                          merge_status, state}
+                          merge_status, detailed_merge_status, has_conflicts,
+                          state, approved, approvals_left, approvals_required}
+        approve 相关字段仅在 with_approvals=True 时填充，否则为 None。
     """
     project, error = _resolve_gitlab_project(directory, gitlab_url, token)
     if error:
@@ -150,7 +154,7 @@ def get_merge_requests(directory, gitlab_url, token, state='opened',
         reviewers = ', '.join(
             filter(None, (_extract_username(u) for u in (getattr(mr, 'reviewers', None) or [])))
         )
-        result.append({
+        entry = {
             'iid': mr.iid,
             'title': getattr(mr, 'title', ''),
             'source_branch': getattr(mr, 'source_branch', ''),
@@ -161,8 +165,22 @@ def get_merge_requests(directory, gitlab_url, token, state='opened',
             'created_at': getattr(mr, 'created_at', ''),
             'web_url': getattr(mr, 'web_url', ''),
             'merge_status': getattr(mr, 'merge_status', ''),
+            'detailed_merge_status': getattr(mr, 'detailed_merge_status', None),
+            'has_conflicts': getattr(mr, 'has_conflicts', None),
             'state': getattr(mr, 'state', ''),
-        })
+            'approved': None,
+            'approvals_left': None,
+            'approvals_required': None,
+        }
+        if with_approvals:
+            try:
+                appr = mr.approvals.get()
+                entry['approved'] = bool(getattr(appr, 'approved', False))
+                entry['approvals_left'] = getattr(appr, 'approvals_left', None)
+                entry['approvals_required'] = getattr(appr, 'approvals_required', None)
+            except Exception:
+                pass
+        result.append(entry)
     return result, None
 
 
