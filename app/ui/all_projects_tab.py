@@ -17,14 +17,16 @@ from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
     QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QMessageBox, QPushButton, QScrollArea,
+    QListWidgetItem, QMenu, QMessageBox, QPushButton, QScrollArea,
     QStackedWidget, QTableWidget, QTableWidgetItem, QTextEdit,
     QVBoxLayout, QWidget, QFormLayout
 )
 
 from app.async_utils import run_blocking
+from app.recent_branch_store import RecentBranchStore
 from app.widgets import NoWheelComboBox
 from quick_create_branch import create_branch as create_branch_func
+from quick_create_branch import smart_checkout as smart_checkout_func
 from quick_generate_mr_form import (
     generate_mr, get_merge_requests, merge_merge_request,
     get_gitlab_usernames, get_current_gitlab_username, get_branch_details, get_remote_branch_details,
@@ -124,6 +126,9 @@ class AllProjectsTab(QWidget):
         # 批量创建分支：聚合分支 → 拥有该分支的 WorkspaceTab 列表
         self._cb_branch_projects = {}
         self._cb_total_projects = 0
+
+        # 最近分支记录（跨 workspace，按 workspace 路径分组）
+        self._recent_branch_store = RecentBranchStore()
 
         self.initUI()
 
@@ -574,7 +579,16 @@ class AllProjectsTab(QWidget):
             'QPushButton:hover { background: #2ecc71; }'
             'QPushButton:disabled { background: #bdc3c7; }'
         )
-        layout.addWidget(self.cb_create_button)
+
+        self.cb_checkout_recent_btn = QPushButton('切换到最近分支')
+        self.cb_checkout_recent_btn.setMinimumHeight(38)
+        self.cb_checkout_recent_btn.clicked.connect(self._open_recent_branch_menu)
+
+        cb_btn_row = QHBoxLayout()
+        cb_btn_row.addWidget(self.cb_create_button)
+        cb_btn_row.addWidget(self.cb_checkout_recent_btn)
+        cb_btn_row.addStretch()
+        layout.addLayout(cb_btn_row)
 
         self.cb_output = QTextEdit()
         self.cb_output.setReadOnly(True)
@@ -793,6 +807,13 @@ class AllProjectsTab(QWidget):
                     outputs.append(f'{header}\n{out}')
                     if 'Branch created successfully!' in out:
                         success_any = True
+                        # 记录到 recent_branches（每条成功分支独立写入）
+                        full = new_branch + '__from__' + target.replace('/', '@')
+                        ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                        try:
+                            self._recent_branch_store.add(ws.path, full, ts)
+                        except Exception:
+                            pass
                     else:
                         last = out.strip().splitlines()[-1] if out.strip() else '未知错误'
                         failed.append({'project': ws.workspace_name, 'target': target, 'error': last})
@@ -810,6 +831,52 @@ class AllProjectsTab(QWidget):
                 self._save_new_branch_to_history(new_branch)
                 self.cb_new_branch_combo.setEditText(self._get_default_new_branch_prefix())
             self._report_failures(failed, '批量创建分支')
+
+        run_blocking(_run, on_success=on_success, parent=self)
+
+    def _open_recent_branch_menu(self) -> None:
+        """两级菜单：顶层为 workspace 子菜单，每个子菜单列出该 workspace 的最近分支。"""
+        import os
+        workspaces = self._recent_branch_store.list_workspaces()
+        if not workspaces:
+            QMessageBox.information(self, '最近分支', '暂无最近创建的分支记录。')
+            return
+        menu = QMenu(self)
+        for ws_path in workspaces:
+            exists = os.path.isdir(ws_path)
+            label = ws_path + ('' if exists else '  [路径缺失]')
+            submenu = menu.addMenu(label)
+            if not exists:
+                submenu.setEnabled(False)
+                continue
+            entries = self._recent_branch_store.list_by_workspace(ws_path, limit=10)
+            for e in entries:
+                act = submenu.addAction(f'{e.branch}  ({e.created_at})')
+                act.triggered.connect(
+                    lambda _=False, p=ws_path, b=e.branch: self._checkout_recent_for(p, b)
+                )
+        menu.exec_(self.cb_checkout_recent_btn.mapToGlobal(
+            self.cb_checkout_recent_btn.rect().bottomLeft()
+        ))
+
+    def _checkout_recent_for(self, workspace_path: str, branch: str) -> None:
+        """对指定 workspace 执行 smart_checkout，并按状态弹出 QMessageBox。"""
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+
+        def _run():
+            return smart_checkout_func(workspace_path, branch)
+
+        def on_success(result):
+            QApplication.restoreOverrideCursor()
+            status, msg = result
+            if status == 'ok':
+                QMessageBox.information(self, '切换成功', msg)
+            elif status == 'ok_stash':
+                QMessageBox.warning(self, '已切换（已 stash）', msg)
+            elif status == 'skip':
+                QMessageBox.information(self, '提示', msg)
+            else:
+                QMessageBox.critical(self, '切换失败', msg)
 
         run_blocking(_run, on_success=on_success, parent=self)
 
