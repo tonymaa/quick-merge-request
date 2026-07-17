@@ -29,6 +29,67 @@ from app.ui.toast_notification import CheckoutToast
 from PyQt5.QtWidgets import QMenu
 
 
+_DETAILED_MERGE_STATUS_CN = {
+    'mergeable': '可合并',
+    'can_be_merged': '可合并',
+    'conflict': '冲突',
+    'broken_status': '状态损坏',
+    'checking': '检查中',
+    'unchecked': '未检查',
+    'ci_must_pass': 'CI 未通过',
+    'ci_still_running': 'CI 进行中',
+    'ci_failed': 'CI 失败',
+    'discussions_not_resolved': '讨论未解决',
+    'draft_status': '草稿',
+    'not_approvable': '不可审批',
+    'not_approved': '未审批',
+    'approval_sync': '审批同步中',
+    'blocked_status': '被阻塞',
+    'p_ci_must_pass': 'CI 需通过',
+    'p_discussions_not_resolved': '讨论待解决',
+}
+
+
+def _format_mr_merge_status(mr):
+    """返回 (文本, 颜色, tooltip)。优先用 detailed_merge_status。"""
+    detailed = mr.get('detailed_merge_status')
+    if detailed:
+        cn = _DETAILED_MERGE_STATUS_CN.get(detailed, detailed)
+        tip = f'detailed_merge_status: {detailed}'
+        if mr.get('has_conflicts'):
+            cn = '冲突'
+            tip += '\nhas_conflicts: true'
+        if detailed in ('mergeable', 'can_be_merged'):
+            return cn, '#27ae60', tip
+        if detailed in ('conflict',) or mr.get('has_conflicts'):
+            return cn, '#e74c3c', tip
+        if detailed in ('checking', 'unchecked', 'ci_still_running', 'approval_sync'):
+            return cn, '#f39c12', tip
+        return cn, '#e74c3c', tip
+    legacy = mr.get('merge_status', '')
+    if legacy == 'can_be_merged':
+        return '可合并', '#27ae60', 'merge_status: can_be_merged'
+    if legacy == 'cannot_be_merged':
+        return '不可合并', '#e74c3c', 'merge_status: cannot_be_merged'
+    return legacy, None, None
+
+
+def _format_mr_approval(mr):
+    """返回 (文本, 颜色)。approve 字段为 None 表示未加载。"""
+    approved = mr.get('approved')
+    if approved is None:
+        return '—', '#888'
+    left = mr.get('approvals_left')
+    required = mr.get('approvals_required')
+    if required == 0:
+        return '无需审批', '#888'
+    if approved:
+        return '✓ 已批', '#27ae60'
+    if left is not None and required is not None:
+        return f'✗ {required - left}/{required}', '#e74c3c'
+    return '✗ 未批', '#e74c3c'
+
+
 class CollapsibleConsole(QWidget):
     """可折叠的控制台日志区"""
 
@@ -1260,9 +1321,9 @@ class WorkspaceTab(QWidget):
 
         # ── MR 表格 ──
         self.mr_list_table = QTableWidget()
-        self.mr_list_table.setColumnCount(7)
+        self.mr_list_table.setColumnCount(8)
         self.mr_list_table.setHorizontalHeaderLabels(
-            ['标题', '源分支 → 目标分支', '指派', '审查者', '创建时间', '合并状态', '操作']
+            ['标题', '源分支 → 目标分支', '指派', '审查者', '创建时间', '审批', '合并状态', '操作']
         )
         self.mr_list_table.setAlternatingRowColors(True)
         self.mr_list_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -1279,11 +1340,13 @@ class WorkspaceTab(QWidget):
         header.setSectionResizeMode(4, QHeaderView.Fixed)
         header.setSectionResizeMode(5, QHeaderView.Fixed)
         header.setSectionResizeMode(6, QHeaderView.Fixed)
+        header.setSectionResizeMode(7, QHeaderView.Fixed)
         self.mr_list_table.setColumnWidth(2, 90)
         self.mr_list_table.setColumnWidth(3, 90)
         self.mr_list_table.setColumnWidth(4, 150)
-        self.mr_list_table.setColumnWidth(5, 110)
-        self.mr_list_table.setColumnWidth(6, 80)
+        self.mr_list_table.setColumnWidth(5, 90)
+        self.mr_list_table.setColumnWidth(6, 110)
+        self.mr_list_table.setColumnWidth(7, 80)
 
         self.mr_list_table.setStyleSheet('''
             QTableWidget {
@@ -1406,7 +1469,8 @@ class WorkspaceTab(QWidget):
                     author = username
             return get_merge_requests(
                 self.path, url, token,
-                state=state, author=author, assignee=assignee, reviewer=reviewer
+                state=state, author=author, assignee=assignee, reviewer=reviewer,
+                with_approvals=True
             ), author
 
         def on_success(result):
@@ -1457,12 +1521,21 @@ class WorkspaceTab(QWidget):
             self.mr_list_table.setItem(row, 3, QTableWidgetItem(mr.get('reviewers', '')))
             self.mr_list_table.setItem(row, 4, QTableWidgetItem(self._format_mr_datetime(mr['created_at'])))
 
-            status_item = QTableWidgetItem(mr['merge_status'])
-            if mr['merge_status'] == 'can_be_merged':
-                status_item.setForeground(QColor('#27ae60'))
-            elif mr['merge_status'] == 'cannot_be_merged':
-                status_item.setForeground(QColor('#e74c3c'))
-            self.mr_list_table.setItem(row, 5, status_item)
+            appr_text, appr_color = _format_mr_approval(mr)
+            appr_item = QTableWidgetItem(appr_text)
+            if appr_color:
+                appr_item.setForeground(QColor(appr_color))
+            appr_item.setTextAlignment(Qt.AlignCenter)
+            self.mr_list_table.setItem(row, 5, appr_item)
+
+            status_text, status_color, status_tip = _format_mr_merge_status(mr)
+            status_item = QTableWidgetItem(status_text)
+            if status_color:
+                status_item.setForeground(QColor(status_color))
+            if status_tip:
+                status_item.setToolTip(status_tip)
+            status_item.setTextAlignment(Qt.AlignCenter)
+            self.mr_list_table.setItem(row, 6, status_item)
 
             merge_btn = QPushButton('合并')
             merge_btn.setMinimumHeight(30)
@@ -1483,7 +1556,7 @@ class WorkspaceTab(QWidget):
                     m['iid'], m['title'], m['source_branch'], m['target_branch']
                 )
             )
-            self.mr_list_table.setCellWidget(row, 6, merge_btn)
+            self.mr_list_table.setCellWidget(row, 7, merge_btn)
 
     def run_merge_mr(self, mr_iid, title, source_branch, target_branch):
         """合并前弹确认框，确认后异步调用 GitLab API 合并"""
