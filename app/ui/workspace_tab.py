@@ -13,7 +13,7 @@ from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import QApplication
 
 from app.async_utils import run_blocking
-from quick_create_branch import create_branch as create_branch_func, get_remote_branches
+from quick_create_branch import create_branch as create_branch_func, get_remote_branches, smart_checkout as smart_checkout_func
 from quick_generate_mr_form import (
     get_local_branches, get_all_local_branches, generate_mr, get_mr_defaults,
     parse_target_branch_from_source, get_gitlab_usernames, get_current_gitlab_username, get_branch_diff,
@@ -24,6 +24,9 @@ from quick_generate_mr_form import (
 from app.widgets import NoWheelComboBox, enable_combo_search as util_enable_combo_search
 from PyQt5.QtWidgets import QScrollArea, QLabel
 from app.ui.commit_diff_dialog import CommitDiffDialog
+from app.recent_branch_store import RecentBranchStore
+from app.ui.toast_notification import CheckoutToast
+from PyQt5.QtWidgets import QMenu
 
 
 class CollapsibleConsole(QWidget):
@@ -497,6 +500,9 @@ class WorkspaceTab(QWidget):
         self._is_prefetching = False
         self._last_fetch_time = 0
 
+        self._recent_branch_store = RecentBranchStore()
+        self._toast: CheckoutToast | None = None  # 延迟到主窗口可用时创建
+
         self.initUI()
 
     def initUI(self):
@@ -578,11 +584,18 @@ class WorkspaceTab(QWidget):
         layout.addRow('可选远程分支', branch_buttons_layout)
         layout.addRow(shuttle_layout)
 
-        self.create_branch_button = QPushButton('创建分支')
         self.create_branch_output = QTextEdit()
         self.create_branch_output.setReadOnly(True)
 
-        layout.addRow(self.create_branch_button)
+        btn_row = QHBoxLayout()
+        self.create_branch_button = QPushButton('创建分支')
+        self.checkout_recent_btn = QPushButton('切换到最近分支')
+        self.checkout_recent_btn.clicked.connect(self._open_recent_branch_menu)
+        btn_row.addWidget(self.create_branch_button)
+        btn_row.addWidget(self.checkout_recent_btn)
+        btn_row.addStretch()
+        layout.addRow(btn_row)
+
         layout.addRow(self.create_branch_output)
 
         self.create_branch_button.clicked.connect(self.run_create_branch)
@@ -746,7 +759,76 @@ class WorkspaceTab(QWidget):
                 prefix = self.get_default_new_branch_prefix()
                 self.new_branch_combo.setEditText(prefix)
 
+                # 记录每条成功创建的分支到 recent_branches
+                from datetime import datetime
+                ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                new_branch_full_list = []
+                for output, target in zip(all_output, target_branches):
+                    if 'Branch created successfully!' in output:
+                        full = new_branch + '__from__' + target.replace('/', '@')
+                        new_branch_full_list.append(full)
+                        self._recent_branch_store.add(self.path, full, ts)
+
+                # 弹 toast（多分支时不直接切，仅提示）
+                if len(new_branch_full_list) == 1:
+                    self._show_checkout_toast(new_branch_full_list[0])
+                elif len(new_branch_full_list) > 1:
+                    self._show_checkout_toast_multi(len(new_branch_full_list))
+
         run_blocking(_create_all_branches, on_success=on_success, parent=self)
+
+    def _show_checkout_toast(self, branch: str) -> None:
+        def do_checkout():
+            self._checkout_recent(branch)
+
+        # 每次重建 toast（绑定独立闭包；旧的隐藏即可被 GC）
+        top_window = self.window()
+        self._toast = CheckoutToast(top_window, on_checkout=do_checkout)
+        self._toast.show_message(
+            f'分支 {branch} 创建成功，是否切换？', branch=branch,
+        )
+
+    def _show_checkout_toast_multi(self, count: int) -> None:
+        top_window = self.window()
+        self._toast = CheckoutToast(top_window, on_checkout=lambda: None)
+        self._toast.show_message(
+            f'已创建 {count} 条分支，可通过"切换到最近分支"按钮选择。',
+            branch=None,
+        )
+
+    def _open_recent_branch_menu(self) -> None:
+        entries = self._recent_branch_store.list_by_workspace(self.path, limit=10)
+        if not entries:
+            QMessageBox.information(self, '最近分支', '当前 workspace 暂无最近创建的分支记录。')
+            return
+        menu = QMenu(self)
+        for e in entries:
+            label = f'{e.branch}  ({e.created_at})'
+            action = menu.addAction(label)
+            action.triggered.connect(lambda _=False, b=e.branch: self._checkout_recent(b))
+        menu.exec_(self.checkout_recent_btn.mapToGlobal(self.checkout_recent_btn.rect().bottomLeft()))
+
+    def _checkout_recent(self, branch: str) -> None:
+        from PyQt5.QtWidgets import QApplication
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+
+        def _run():
+            return smart_checkout_func(self.path, branch)
+
+        def on_success(result):
+            QApplication.restoreOverrideCursor()
+            status, msg = result
+            if status == 'ok':
+                QMessageBox.information(self, '切换成功', msg)
+            elif status == 'ok_stash':
+                QMessageBox.warning(self, '已切换（已 stash）', msg)
+            elif status == 'skip':
+                QMessageBox.information(self, '提示', msg)
+            else:
+                QMessageBox.critical(self, '切换失败', msg)
+
+        from app.async_utils import run_blocking
+        run_blocking(_run, on_success=on_success, parent=self)
 
     def run_refresh_remote_branches(self):
         self.available_branches_list.clear()
