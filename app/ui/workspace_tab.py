@@ -827,8 +827,12 @@ class WorkspaceTab(QWidget):
             else:
                 QMessageBox.critical(self, '切换失败', msg)
 
+        def on_error(err):
+            QApplication.restoreOverrideCursor()
+            QMessageBox.critical(self, '切换异常', f'切换过程中发生错误: {err}')
+
         from app.async_utils import run_blocking
-        run_blocking(_run, on_success=on_success, parent=self)
+        run_blocking(_run, on_success=on_success, on_error=on_error, parent=self)
 
     def run_refresh_remote_branches(self):
         self.available_branches_list.clear()

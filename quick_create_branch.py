@@ -104,7 +104,8 @@ def smart_checkout(directory: str, target_branch: str) -> tuple[str, str]:
 
     # 失败 → stash 后重试
     ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    stash_msg = f'auto-stash: {cur} → {target_branch} [{ts}]'
+    cur_display = cur or '<detached>'
+    stash_msg = f'auto-stash: {cur_display} → {target_branch} [{ts}]'
     s_ok, s_out, s_err = run_command(
         ['git', 'stash', 'push', '-m', stash_msg], directory
     )

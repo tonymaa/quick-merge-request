@@ -878,7 +878,11 @@ class AllProjectsTab(QWidget):
             else:
                 QMessageBox.critical(self, '切换失败', msg)
 
-        run_blocking(_run, on_success=on_success, parent=self)
+        def on_error(err):
+            QApplication.restoreOverrideCursor()
+            QMessageBox.critical(self, '切换异常', f'切换过程中发生错误: {err}')
+
+        run_blocking(_run, on_success=on_success, on_error=on_error, parent=self)
 
     # ──────────────────────── 批量创建合并请求 ──────────────────────
     def init_create_mr_tab(self):
