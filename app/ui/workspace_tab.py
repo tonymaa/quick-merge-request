@@ -818,10 +818,15 @@ class WorkspaceTab(QWidget):
         def on_success(result):
             QApplication.restoreOverrideCursor()
             status, msg = result
-            if status == 'ok':
-                QMessageBox.information(self, '切换成功', msg)
-            elif status == 'ok_stash':
-                QMessageBox.warning(self, '已切换（已 stash）', msg)
+            if status in ('ok', 'ok_stash'):
+                self._cached_branch = branch
+                main_win = self.window()
+                if hasattr(main_win, '_update_window_title') and main_win.workspace_tabs.currentWidget() is self:
+                    main_win._update_window_title(self, branch)
+                if status == 'ok':
+                    QMessageBox.information(self, '切换成功', msg)
+                else:
+                    QMessageBox.warning(self, '已切换（已 stash）', msg)
             elif status == 'skip':
                 QMessageBox.information(self, '提示', msg)
             else:
