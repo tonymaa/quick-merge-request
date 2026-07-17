@@ -60,11 +60,25 @@ def get_remote_branches(directory):
     success, stdout, stderr = run_command(['git', 'branch', '-r'], directory)
     if not success:
         return [], f"Error loading remote branches:\n{stderr}"
-    
+
     branches = stdout.strip().split('\n')
     # Clean up branch names (e.g., "  origin/master" -> "master")
     remote_branches = [b.strip().replace('origin/', '') for b in branches if 'HEAD' not in b]
     return remote_branches, "Remote branches loaded."
+
+
+def current_branch(directory: str) -> str | None:
+    """返回当前分支名；detached HEAD 或失败返回 None。"""
+    success, stdout, stderr = run_command(
+        ['git', 'branch'], directory
+    )
+    if not success:
+        return None
+    for line in stdout.splitlines():
+        stripped = line.strip()
+        if stripped.startswith('* '):
+            return stripped[2:].strip()
+    return None
 
 if __name__ == '__main__':
     # Example usage:
