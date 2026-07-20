@@ -835,16 +835,36 @@ class AllProjectsTab(QWidget):
 
         run_blocking(_run, on_success=on_success, parent=self)
 
+    def _all_workspace_paths_in_config(self) -> set:
+        """返回当前 config 已加载的所有 workspace 路径集合。"""
+        paths = set()
+        tabs = getattr(getattr(self, 'main_window', None), 'workspace_tabs', None)
+        if tabs is None:
+            return paths
+        for i in range(tabs.count()):
+            w = tabs.widget(i)
+            if hasattr(w, 'path'):
+                paths.add(w.path)
+        return paths
+
     def _open_recent_branch_menu(self) -> None:
         """两级菜单：顶层为 workspace 子菜单，每个子菜单列出该 workspace 的最近分支。
 
         顶部额外加「共有分支」段：列出所有勾选项目里都出现过的最近创建分支，
         点击后对勾选的每个项目执行 smart_checkout（一键切换）。
+
+        只显示当前 config 已加载的项目路径，其他 config 残留记录会自动隐藏。
         """
         import os
-        workspaces = self._recent_branch_store.list_workspaces()
+        config_paths = self._all_workspace_paths_in_config()
+        workspaces = [
+            w for w in self._recent_branch_store.list_workspaces()
+            if w in config_paths
+        ]
         if not workspaces:
-            QMessageBox.information(self, '最近分支', '暂无最近创建的分支记录。')
+            msg = ('当前 config 下暂无最近创建的分支记录。'
+                   if config_paths else '暂无最近创建的分支记录。')
+            QMessageBox.information(self, '最近分支', msg)
             return
         menu = QMenu(self)
 
