@@ -26,6 +26,7 @@ from PyQt5.QtWidgets import QScrollArea, QLabel
 from app.ui.commit_diff_dialog import CommitDiffDialog
 from app.recent_branch_store import RecentBranchStore
 from app.ui.toast_notification import CheckoutToast
+from app.ui.loading_button import LoadingButton
 from PyQt5.QtWidgets import QMenu
 
 
@@ -1309,7 +1310,7 @@ class WorkspaceTab(QWidget):
         self.mr_list_refresh_btn.clicked.connect(self.run_refresh_mr_list)
         top_layout.addWidget(self.mr_list_refresh_btn)
 
-        self.mr_list_merge_all_btn = QPushButton('一键合并已批准')
+        self.mr_list_merge_all_btn = LoadingButton('一键合并已批准')
         self.mr_list_merge_all_btn.setCursor(Qt.PointingHandCursor)
         self.mr_list_merge_all_btn.setStyleSheet('''
             QPushButton {
@@ -1554,7 +1555,7 @@ class WorkspaceTab(QWidget):
             status_item.setTextAlignment(Qt.AlignCenter)
             self.mr_list_table.setItem(row, 6, status_item)
 
-            merge_btn = QPushButton('合并')
+            merge_btn = LoadingButton('合并')
             merge_btn.setMinimumHeight(30)
             merge_btn.setStyleSheet('''
                 QPushButton {
@@ -1569,13 +1570,13 @@ class WorkspaceTab(QWidget):
                 merge_btn.setEnabled(False)
                 merge_btn.setToolTip('仅 Open 状态的 MR 可合并')
             merge_btn.clicked.connect(
-                lambda _checked, m=mr: self.run_merge_mr(
-                    m['iid'], m['title'], m['source_branch'], m['target_branch']
+                lambda _checked, m=mr, b=merge_btn: self.run_merge_mr(
+                    m['iid'], m['title'], m['source_branch'], m['target_branch'], btn=b
                 )
             )
             self.mr_list_table.setCellWidget(row, 7, merge_btn)
 
-    def run_merge_mr(self, mr_iid, title, source_branch, target_branch):
+    def run_merge_mr(self, mr_iid, title, source_branch, target_branch, btn=None):
         """合并前弹确认框，确认后异步调用 GitLab API 合并"""
         reply = QMessageBox.question(
             self, '确认合并 Merge Request 吗？',
@@ -1592,17 +1593,27 @@ class WorkspaceTab(QWidget):
         token = self._get_gitlab_config_value('private_token')
 
         self.mr_list_status_label.setText(f'正在合并 MR !{mr_iid}...')
+        if btn is not None:
+            btn.start_loading('合并中')
         QApplication.processEvents()
 
         def _merge():
             return merge_merge_request(self.path, url, token, mr_iid)
 
         def on_success(output):
+            if btn is not None:
+                btn.stop_loading()
             self.mr_list_status_label.setText(output)
             # 合并完成后刷新列表（成功的 MR 会从列表消失）
             self.run_refresh_mr_list()
 
-        run_blocking(_merge, on_success=on_success, parent=self)
+        def on_error(err):
+            if btn is not None:
+                btn.stop_loading()
+            self.mr_list_status_label.setText(f'合并异常: {err}')
+            QMessageBox.critical(self, '合并异常', f'合并过程中发生错误: {err}')
+
+        run_blocking(_merge, on_success=on_success, on_error=on_error, parent=self)
 
     def run_merge_all_approved(self):
         """一键合并所有「已审批 + 可合并 + Open」的 MR"""
@@ -1630,7 +1641,7 @@ class WorkspaceTab(QWidget):
 
         url = self._get_gitlab_config_value('gitlab_url')
         token = self._get_gitlab_config_value('private_token')
-        self.mr_list_merge_all_btn.setEnabled(False)
+        self.mr_list_merge_all_btn.start_loading('合并中...')
         self.mr_list_status_label.setText(f'正在一键合并 {len(candidates)} 个 MR...')
 
         def _run():
@@ -1646,7 +1657,7 @@ class WorkspaceTab(QWidget):
             return results
 
         def on_success(results):
-            self.mr_list_merge_all_btn.setEnabled(True)
+            self.mr_list_merge_all_btn.stop_loading()
             ok_count = sum(1 for ok, _ in results if ok)
             fail_count = len(results) - ok_count
             self.mr_list_status_label.setText(f'一键合并完成：{ok_count} 成功 / {fail_count} 失败。')
@@ -1658,7 +1669,7 @@ class WorkspaceTab(QWidget):
             self.run_refresh_mr_list()
 
         def on_error(err):
-            self.mr_list_merge_all_btn.setEnabled(True)
+            self.mr_list_merge_all_btn.stop_loading()
             self.mr_list_status_label.setText(f'一键合并异常: {err}')
             QMessageBox.critical(self, '一键合并异常', f'合并过程中发生错误: {err}')
 
