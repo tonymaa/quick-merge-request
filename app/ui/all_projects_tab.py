@@ -836,13 +836,35 @@ class AllProjectsTab(QWidget):
         run_blocking(_run, on_success=on_success, parent=self)
 
     def _open_recent_branch_menu(self) -> None:
-        """两级菜单：顶层为 workspace 子菜单，每个子菜单列出该 workspace 的最近分支。"""
+        """两级菜单：顶层为 workspace 子菜单，每个子菜单列出该 workspace 的最近分支。
+
+        顶部额外加「共有分支」段：列出所有勾选项目里都出现过的最近创建分支，
+        点击后对勾选的每个项目执行 smart_checkout（一键切换）。
+        """
         import os
         workspaces = self._recent_branch_store.list_workspaces()
         if not workspaces:
             QMessageBox.information(self, '最近分支', '暂无最近创建的分支记录。')
             return
         menu = QMenu(self)
+
+        selected = self._selected_workspace_tabs()
+        if selected:
+            common = self._collect_common_branches(selected)
+            if common:
+                submenu = menu.addMenu(f'共有分支 ({len(selected)} 项目)')
+                for branch, latest_ts in common:
+                    act = submenu.addAction(f'{branch}  ({latest_ts})')
+                    act.triggered.connect(
+                        lambda _=False, b=branch: self._checkout_recent_for_all_selected(b)
+                    )
+                menu.addSeparator()
+            elif len(selected) > 1:
+                # 多个项目但无共有分支时显示禁用占位，告知用户
+                submenu = menu.addMenu(f'共有分支 ({len(selected)} 项目)  [无共有分支]')
+                submenu.setEnabled(False)
+                menu.addSeparator()
+
         for ws_path in workspaces:
             exists = os.path.isdir(ws_path)
             label = ws_path + ('' if exists else '  [路径缺失]')
@@ -859,6 +881,79 @@ class AllProjectsTab(QWidget):
         menu.exec_(self.cb_checkout_recent_btn.mapToGlobal(
             self.cb_checkout_recent_btn.rect().bottomLeft()
         ))
+
+    def _collect_common_branches(self, workspaces):
+        """返回所有 workspace 最近分支的交集，按最近创建时间倒序。
+
+        Returns: list[(branch, latest_created_at)]，最多 20 条。
+        """
+        if not workspaces:
+            return []
+        sets = []
+        branch_entries: dict[str, list] = {}
+        for ws in workspaces:
+            entries = self._recent_branch_store.list_by_workspace(ws.path, limit=20)
+            s = set()
+            for e in entries:
+                s.add(e.branch)
+                branch_entries.setdefault(e.branch, []).append(e)
+            sets.append(s)
+        common_set = set.intersection(*sets) if sets else set()
+        if not common_set:
+            return []
+        result = []
+        for b in common_set:
+            entries = branch_entries[b]
+            latest = max(entries, key=lambda e: e.created_at)
+            result.append((b, latest.created_at))
+        result.sort(key=lambda x: x[1], reverse=True)
+        return result[:20]
+
+    def _checkout_recent_for_all_selected(self, branch: str) -> None:
+        """对所有勾选的项目串行 smart_checkout 同一个分支，并汇总结果。"""
+        selected = self._selected_workspace_tabs()
+        if not selected:
+            QMessageBox.information(self, '一键切换', '请先勾选要切换的项目。')
+            return
+        reply = QMessageBox.question(
+            self, f'确认在 {len(selected)} 个项目中切换到 {branch}？',
+            '将依次切换以下项目：\n\n'
+            + '\n'.join(f'- {ws.workspace_name or ws.path}' for ws in selected)
+            + '\n\n如有冲突会自动 stash（不会丢改动）。',
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if reply == QMessageBox.No:
+            return
+
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+
+        def _run():
+            results = []
+            for ws in selected:
+                try:
+                    status, msg = smart_checkout_func(ws.path, branch)
+                    results.append((ws.workspace_name or ws.path, status, msg))
+                except Exception as e:
+                    results.append((ws.workspace_name or ws.path, 'fail', str(e)))
+            return results
+
+        def on_success(results):
+            QApplication.restoreOverrideCursor()
+            ok = sum(1 for _, s, _ in results if s in ('ok', 'ok_stash', 'skip'))
+            fail = len(results) - ok
+            detail = '\n'.join(f'[{name}] {msg}' for name, _, msg in results)
+            title = f'切换完成（{ok} 成功 / {fail} 失败）' if fail else '切换完成'
+            if fail:
+                QMessageBox.warning(self, title, detail)
+            else:
+                QMessageBox.information(self, title, detail)
+
+        def on_error(err):
+            QApplication.restoreOverrideCursor()
+            QMessageBox.critical(self, '切换异常', f'切换过程中发生错误: {err}')
+
+        run_blocking(_run, on_success=on_success, on_error=on_error, parent=self)
+
 
     def _checkout_recent_for(self, workspace_path: str, branch: str) -> None:
         """对指定 workspace 执行 smart_checkout，并按状态弹出 QMessageBox。"""
