@@ -2579,6 +2579,19 @@ class AllProjectsTab(QWidget):
             'QPushButton:disabled { background: #f5f5f5; color: #aaa; border-color: #ddd; }'
         )
         top.addWidget(self.mr_list_refresh_btn)
+
+        self.mr_list_merge_all_btn = QPushButton('一键合并已批准')
+        self.mr_list_merge_all_btn.setCursor(Qt.PointingHandCursor)
+        self.mr_list_merge_all_btn.setStyleSheet(
+            'QPushButton { background: #e67e22; color: white; border: none; border-radius: 4px; '
+            'padding: 6px 14px; font-weight: bold; }'
+            'QPushButton:hover { background: #d35400; }'
+            'QPushButton:disabled { background: #bdc3c7; color: #ecf0f1; }'
+        )
+        self.mr_list_merge_all_btn.setToolTip('合并所有「已审批 + 可合并 + Open」的 MR')
+        self.mr_list_merge_all_btn.clicked.connect(self.run_merge_all_approved)
+        top.addWidget(self.mr_list_merge_all_btn)
+
         layout.addLayout(top)
 
         self.mr_list_state_combo.currentIndexChanged.connect(self.run_batch_refresh_mr_list)
@@ -2836,6 +2849,69 @@ class AllProjectsTab(QWidget):
             self.run_batch_refresh_mr_list()
 
         run_blocking(_run, on_success=on_success, parent=self)
+
+    def run_merge_all_approved(self):
+        """一键合并所有「已审批 + 可合并 + Open」的 MR（跨项目，串行执行）"""
+        candidates = [
+            (ws, mr) for ws, mr in self._mr_row_context
+            if mr.get('approved') is True
+            and mr.get('detailed_merge_status') in ('mergeable', 'can_be_merged')
+            and mr.get('state', 'opened') == 'opened'
+        ]
+        if not candidates:
+            QMessageBox.information(
+                self, '一键合并',
+                '当前列表没有可一键合并的 MR。\n需同时满足：已审批 ✓、合并状态「可合并」、Open。'
+            )
+            return
+
+        lines = [
+            f'[{ws.workspace_name}] !{mr["iid"]}  {mr.get("title", "")[:50]}'
+            for ws, mr in candidates
+        ]
+        reply = QMessageBox.question(
+            self, f'确认一键合并 {len(candidates)} 个 MR？',
+            '以下 MR 将被合并（不可撤销）：\n\n' + '\n'.join(lines),
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if reply == QMessageBox.No:
+            return
+
+        url = self._get_gitlab_value('gitlab_url')
+        token = self._get_gitlab_value('private_token')
+        self.mr_list_merge_all_btn.setEnabled(False)
+        self.mr_list_status.setText(f'正在一键合并 {len(candidates)} 个 MR...')
+
+        def _run():
+            results = []
+            for ws, mr in candidates:
+                iid = mr['iid']
+                try:
+                    output = merge_merge_request(ws.path, url, token, iid)
+                    ok = '合并成功' in output
+                    results.append((ok, f'[{ws.workspace_name}] !{iid}: {output}'))
+                except Exception as e:
+                    results.append((False, f'[{ws.workspace_name}] !{iid}: 异常 {e}'))
+            return results
+
+        def on_success(results):
+            self.mr_list_merge_all_btn.setEnabled(True)
+            ok_count = sum(1 for ok, _ in results if ok)
+            fail_count = len(results) - ok_count
+            self.mr_list_status.setText(f'一键合并完成：{ok_count} 成功 / {fail_count} 失败。')
+            if fail_count:
+                detail = '\n'.join(msg for ok, msg in results if not ok)
+                QMessageBox.warning(self, f'{fail_count} 个 MR 合并失败', detail)
+            else:
+                QMessageBox.information(self, '一键合并完成', f'成功合并 {ok_count} 个 MR。')
+            self.run_batch_refresh_mr_list()
+
+        def on_error(err):
+            self.mr_list_merge_all_btn.setEnabled(True)
+            self.mr_list_status.setText(f'一键合并异常: {err}')
+            QMessageBox.critical(self, '一键合并异常', f'合并过程中发生错误: {err}')
+
+        run_blocking(_run, on_success=on_success, on_error=on_error, parent=self)
 
     # ──────────────────────── 工具方法 ──────────────────────────────
     def _report_failures(self, failed, op_name):
