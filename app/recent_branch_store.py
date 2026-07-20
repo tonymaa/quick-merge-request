@@ -40,8 +40,13 @@ class RecentBranchStore:
                     'branch': branch,
                     'created_at': created_at,
                 })
-                if len(items) > 20:
-                    items = items[:20]
+                # Cap per-workspace (not global) so multi-project users keep
+                # a meaningful MRU list in each workspace.
+                ws_items = [it for it in items
+                            if it['workspace_path'] == workspace_path]
+                if len(ws_items) > 20:
+                    drop_ids = {id(it) for it in ws_items[20:]}
+                    items = [it for it in items if id(it) not in drop_ids]
                 db[self.KEY] = items
         except Exception:
             pass
