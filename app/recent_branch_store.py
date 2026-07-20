@@ -81,3 +81,24 @@ class RecentBranchStore:
             if it['workspace_path'] not in seen:
                 seen.append(it['workspace_path'])
         return seen
+
+    def clear_all(self) -> None:
+        """清空全部 workspace 的最近分支记录。"""
+        try:
+            with shelve.open(self._shelve_path, writeback=True) as db:
+                if self.KEY in db:
+                    del db[self.KEY]
+        except Exception:
+            pass
+
+    def clear_for_workspaces(self, workspace_paths) -> None:
+        """清空指定 workspace 集合的记录，其他 workspace 不受影响。"""
+        try:
+            with shelve.open(self._shelve_path, writeback=True) as db:
+                items = list(db.get(self.KEY, []))
+                paths = set(workspace_paths)
+                items = [it for it in items
+                         if it['workspace_path'] not in paths]
+                db[self.KEY] = items
+        except Exception:
+            pass

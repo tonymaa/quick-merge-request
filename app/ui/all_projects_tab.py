@@ -898,9 +898,38 @@ class AllProjectsTab(QWidget):
                 act.triggered.connect(
                     lambda _=False, p=ws_path, b=e.branch: self._checkout_recent_for(p, b)
                 )
+
+        menu.addSeparator()
+        clear_menu = menu.addMenu('清空记录')
+        act_cfg = clear_menu.addAction('清空当前 config 的记录')
+        act_cfg.triggered.connect(lambda: self._clear_recent(only_config=True))
+        act_all = clear_menu.addAction('清空全部记录')
+        act_all.triggered.connect(lambda: self._clear_recent(only_config=False))
+
         menu.exec_(self.cb_checkout_recent_btn.mapToGlobal(
             self.cb_checkout_recent_btn.rect().bottomLeft()
         ))
+
+    def _clear_recent(self, only_config: bool) -> None:
+        """清空最近分支记录。only_config=True 时只清空当前 config 已加载的项目。"""
+        if only_config:
+            paths = self._all_workspace_paths_in_config()
+            scope = f'当前 config 的 {len(paths)} 个项目' if paths else '当前 config（无项目）'
+        else:
+            paths = None
+            scope = '全部项目'
+        reply = QMessageBox.question(
+            self, '清空最近分支记录',
+            f'确认清空{scope}的最近分支记录？此操作不可撤销。',
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if reply == QMessageBox.No:
+            return
+        if paths is None:
+            self._recent_branch_store.clear_all()
+        else:
+            self._recent_branch_store.clear_for_workspaces(paths)
+        QMessageBox.information(self, '已清空', '最近分支记录已清空。')
 
     def _collect_common_branches(self, workspaces):
         """返回所有 workspace 最近分支的交集，按最近创建时间倒序。

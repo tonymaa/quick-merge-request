@@ -64,3 +64,37 @@ def test_list_workspaces(tmp_path):
     ws_list = store.list_workspaces()
     # 按最近活动排序（proj1 最后添加应在前面）
     assert ws_list == ['E:/proj1', 'E:/proj2']
+
+
+def test_clear_all(tmp_path):
+    store = _make_store(tmp_path)
+    store.add('E:/A', 'b1', '2026-07-17 10:00:00')
+    store.add('E:/B', 'b2', '2026-07-17 11:00:00')
+    store.clear_all()
+    assert store.list_workspaces() == []
+    assert store.list_by_workspace('E:/A') == []
+
+
+def test_clear_all_idempotent_on_empty(tmp_path):
+    store = _make_store(tmp_path)
+    store.clear_all()  # 空库也不应报错
+    assert store.list_workspaces() == []
+
+
+def test_clear_for_workspaces_removes_only_matched(tmp_path):
+    store = _make_store(tmp_path)
+    store.add('E:/A', 'b1', '2026-07-17 10:00:00')
+    store.add('E:/B', 'b2', '2026-07-17 11:00:00')
+    store.add('E:/C', 'b3', '2026-07-17 12:00:00')
+    store.clear_for_workspaces({'E:/A', 'E:/C'})
+    assert store.list_workspaces() == ['E:/B']
+    assert store.list_by_workspace('E:/A') == []
+    assert store.list_by_workspace('E:/C') == []
+    assert len(store.list_by_workspace('E:/B')) == 1
+
+
+def test_clear_for_workspaces_no_match_is_noop(tmp_path):
+    store = _make_store(tmp_path)
+    store.add('E:/A', 'b1', '2026-07-17 10:00:00')
+    store.clear_for_workspaces({'E:/X'})
+    assert store.list_workspaces() == ['E:/A']
